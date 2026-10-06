@@ -167,4 +167,90 @@ BENCHMARK_CASES = [
         expected_decision="CAVEAT",
         expected_reason="The evidence supports the answer but lacks a date for freshness assessment.",
     ),
+        make_case(
+        name="empty_evidence_case",
+        query="What is machine learning?",
+        answer="Machine learning is a method where computers learn patterns from data.",
+        evidence=[],
+        expected_decision="ABSTAIN",
+        expected_reason="No evidence is available to support the answer.",
+    ),
+
+    make_case(
+        name="long_answer_unsupported_claim",
+        query="What are the benefits of regular exercise?",
+        answer=(
+            "Regular exercise can improve cardiovascular health, support "
+            "muscle strength, improve mood, and completely prevent all diseases."
+        ),
+        evidence=[
+            {
+                "text": "Regular physical activity is associated with improved cardiovascular health and mood.",
+                "source": "health.txt",
+                "date": datetime.date.today(),
+            }
+        ],
+        expected_decision="CAVEAT",
+        expected_reason="The evidence supports some claims but does not support the extreme claim that exercise prevents all diseases.",
+    ),
+
+    make_case(
+        name="directly_contradictory_evidence",
+        query="Is the company profitable?",
+        answer="Yes, the company is profitable.",
+        evidence=[
+            {
+                "text": "The company reported a net profit of $5 million.",
+                "source": "financial_2025.txt",
+                "date": datetime.date.today(),
+            },
+            {
+                "text": "The company reported a net loss of $3 million.",
+                "source": "financial_2026.txt",
+                "date": datetime.date.today(),
+            },
+        ],
+        expected_decision="ESCALATE",
+        expected_reason="Evidence from different sources directly conflicts about profitability.",
+    ),
+
+    make_case(
+        name="highly_ambiguous_query",
+        query="What happened there?",
+        answer="The project was cancelled.",
+        evidence=[
+            {
+                "text": "The project was cancelled in March 2026.",
+                "source": "project.txt",
+                "date": datetime.date.today(),
+            }
+        ],
+        expected_decision="ESCALATE",
+        expected_reason="The query does not identify what 'there' or 'what happened' refers to.",
+    ),
+
+    make_case(
+        name="partial_support_across_chunks",
+        query="What factors contributed to the city's growth?",
+        answer="The city's growth was driven by population growth, new infrastructure, and increased investment.",
+        evidence=[
+            {
+                "text": "Population growth contributed significantly to the city's expansion.",
+                "source": "urban_a.txt",
+                "date": datetime.date.today(),
+            },
+            {
+                "text": "New infrastructure projects supported further development.",
+                "source": "urban_b.txt",
+                "date": datetime.date.today(),
+            },
+            {
+                "text": "The city has several historical monuments.",
+                "source": "history.txt",
+                "date": datetime.date.today(),
+            },
+        ],
+        expected_decision="CAVEAT",
+        expected_reason="The evidence supports population growth and infrastructure but does not support the claim about increased investment.",
+    ),
 ]

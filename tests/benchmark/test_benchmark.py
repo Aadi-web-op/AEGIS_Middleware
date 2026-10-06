@@ -2,7 +2,7 @@ from tests.benchmark.test_cases import BENCHMARK_CASES
 
 
 def test_benchmark_has_expected_coverage():
-    assert len(BENCHMARK_CASES) == 10
+    assert len(BENCHMARK_CASES) == 15
 
     decisions = {
         case["expected_decision"]
