@@ -6,3 +6,5 @@ pypdf
 sentence-transformers
 faiss-cpu
 numpy
+torch>=2.5
+transformers>=4.46

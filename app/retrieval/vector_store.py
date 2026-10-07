@@ -20,7 +20,7 @@ class VectorStore:
         self.chunks: List[DocumentChunk] = []
 
         # Determine embedding dimension from the model.
-        dimension = self.model.get_embedding_dimension()
+        dimension = self.model.get_sentence_embedding_dimension()
 
         if dimension is None:
             raise RuntimeError("Could not determine embedding dimension.")
