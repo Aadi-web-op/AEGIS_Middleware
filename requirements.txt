@@ -9,3 +9,5 @@ faiss-cpu
 numpy
 torch>=2.5
 transformers>=4.46
+httpx>=0.27
+
