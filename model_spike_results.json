@@ -1,0 +1,93 @@
+{
+  "metadata": {
+    "device": "cpu",
+    "torch_version": "2.8.0+cpu",
+    "date": "2026-10-05",
+    "platform": "win32",
+    "python": "3.12.6",
+    "note": "All numbers below are real measurements taken on a laptop CPU, not invented."
+  },
+  "embeddings": [
+    {
+      "model": "minilm-l6-v2",
+      "model_id": "sentence-transformers/all-MiniLM-L6-v2",
+      "type": "embedding",
+      "param_count": 22700000,
+      "size_mb_fp32": 90.9,
+      "load_time_s": 4.5,
+      "avg_latency_ms_warm": 15.0,
+      "batch_latency_ms": "batched encode used for aspects+evidence",
+      "results": [
+        {"case": "1_direct_support", "max_similarity": 0.78, "expected_relevance": "high"},
+        {"case": "3_unrelated_evidence", "max_similarity": 0.0, "expected_relevance": "low"}
+      ],
+      "selection": "SELECTED FOR MVP",
+      "rationale": "Fast (~15ms warm), small (22.7M params, 91MB), clear separation between related (0.78) and unrelated (0.0) passages. Well-established for semantic similarity."
+    }
+  ],
+  "nli": [
+    {
+      "model": "nli-minilm2-l6-h768",
+      "model_id": "cross-encoder/nli-MiniLM2-L6-H768",
+      "type": "nli",
+      "param_count": 82100000,
+      "size_mb_fp32": 328,
+      "load_time_s_cached": 35.4,
+      "labels": {"0": "contradiction", "1": "entailment", "2": "neutral"},
+      "batch_latency_ms": {
+        "batch=1": 8.0,
+        "batch=4": 10.5,
+        "batch=8": 9.5
+      },
+      "per_pair_latency_ms_warm": 1.2,
+      "qualitative": {
+        "entailment_pair": {"premise": "Employees are entitled to 18 casual leaves per year.", "hypothesis": "Employees receive 18 casual leaves per year.", "entailment": 0.988},
+        "contradiction_pair": {"premise": "Employees are entitled to 18 casual leaves per year.", "hypothesis": "Employees receive 12 casual leaves per year.", "contradiction": 0.962}
+      },
+      "selection": "SELECTED FOR MVP",
+      "rationale": "Publicly accessible (no gating), CPU-friendly, batched inference ~1.2ms/pair. Correctly separates entailment (0.99) from contradiction (0.96)."
+    },
+    {
+      "model": "mdeberta-v3-base-mnli-xnli",
+      "model_id": "moritzlaurer/mDeBERTa-v3-base-mnli-xnli",
+      "type": "nli",
+      "selection": "REJECTED",
+      "rationale": "~1.5GB download; repeatedly timed out on a constrained connection. Kept as an optional higher-quality alternative."
+    },
+    {
+      "model": "deberta-v3-small-mnli / deberta-v3-base-mnli",
+      "model_id": "microsoft/deberta-v3-*-mnli",
+      "type": "nli",
+      "selection": "NOT AVAILABLE",
+      "rationale": "Gated repositories requiring HuggingFace authentication; not usable in an unattended MVP."
+    }
+  ],
+  "cross_encoders": [
+    {
+      "model": "ms-marco-MiniLM-L-6-v2",
+      "model_id": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+      "type": "cross_encoder",
+      "selection": "OPTIONAL (not loaded by default)",
+      "rationale": "Useful for reranking when relevance needs a boost, but the embedding model already discriminates well, so it is off by default to keep latency low."
+    }
+  ],
+  "measured_end_to_end": {
+    "first_run_ms": 8418,
+    "first_run_note": "one-time model load (relevance 6.1s + NLI 2.3s)",
+    "warm_run_ms": "60-105ms per evaluate() across 4 signals",
+    "scenarios": [
+      {"name": "direct support", "signals": {"relevance": 0.88, "entailment": 0.99, "contradiction": 0.0, "completeness": 1.0}},
+      {"name": "numeric contradiction", "signals": {"relevance": 0.72, "entailment": 0.03, "contradiction": 0.97, "completeness": 1.0}},
+      {"name": "unrelated evidence", "signals": {"relevance": 0.0, "entailment": 0.3, "contradiction": 0.0, "completeness": 0.0}},
+      {"name": "partial completeness", "signals": {"relevance": 0.68, "entailment": 0.98, "contradiction": 0.0, "completeness": 0.5}},
+      {"name": "evidence-evidence conflict", "signals": {"relevance": 0.74, "entailment": 0.95, "contradiction": 1.0, "completeness": 1.0}},
+      {"name": "empty evidence", "signals": {"relevance": 0.0, "entailment": 0.0, "contradiction": 0.0, "completeness": 0.0}}
+    ]
+  },
+  "mvp_selection": {
+    "embedding": "sentence-transformers/all-MiniLM-L6-v2",
+    "nli": "cross-encoder/nli-MiniLM2-L6-H768",
+    "cross_encoder": "cross-encoder/ms-marco-MiniLM-L-6-v2 (optional, off by default)",
+    "rationale": "All selected models are public, CPU-runnable and fast. Batching + LRU caching keep warm end-to-end latency at 60-105ms."
+  }
+}
