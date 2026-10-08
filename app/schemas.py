@@ -106,6 +106,9 @@ class EvaluateRequest(BaseModel):
     answer: str = Field(min_length=1)
     evidence: list[EvidenceItem] = Field(default_factory=list)
     profile: str = "standard"
+    time_sensitive: bool = True
+
+
 
 
 class EvaluateResponse(BaseModel):

@@ -1,0 +1,51 @@
+version: "0.1.0"
+
+weights:
+  relevance: 0.25
+  support: 0.25
+  agreement: 0.15
+  freshness: 0.10
+  completeness: 0.15
+  clarity: 0.10
+
+profiles:
+  lenient:
+    description: Internal FAQ, low stakes
+    thresholds:
+      answer: 0.70
+      caveat: 0.50
+      escalate: 0.30
+    vetoes:
+      abstain_below_relevance: 0.20
+      escalate_above_contradiction: 0.70
+      escalate_below_support: 0.30
+      caveat_below_freshness: 0.30
+      escalate_above_ambiguity: 0.70
+
+  standard:
+    description: General organisational assistant
+    thresholds:
+      answer: 0.80
+      caveat: 0.60
+      escalate: 0.40
+    vetoes:
+      abstain_below_relevance: 0.30
+      escalate_above_contradiction: 0.60
+      escalate_below_support: 0.40
+      caveat_below_freshness: 0.40
+      escalate_above_ambiguity: 0.60
+
+  strict:
+    description: Medical, legal, finance, compliance
+    thresholds:
+      answer: 0.90
+      caveat: 0.70
+      escalate: 0.50
+    vetoes:
+      abstain_below_relevance: 0.40
+      escalate_above_contradiction: 0.40
+      escalate_below_support: 0.50
+      caveat_below_freshness: 0.50
+      escalate_above_ambiguity: 0.50
+    answer_min_signal: 0.60
+    

@@ -68,4 +68,9 @@ def test_response_gets_unique_request_ids():
 
 def test_reason_code_is_plain_string():
     assert ReasonCode.CONTRADICTION.value == "CONTRADICTION"
+
+
+def test_time_sensitive_defaults_to_true():
+    assert EvaluateRequest(query="Q?", answer="A.").time_sensitive is True
+
     
