@@ -10,6 +10,7 @@ def make_case(
     evidence,
     expected_decision,
     expected_reason,
+    split="dev",
 ):
     return {
         "name": name,
@@ -20,6 +21,7 @@ def make_case(
         ),
         "expected_decision": expected_decision,
         "expected_reason": expected_reason,
+        "split": split,
     }
 
 
@@ -166,16 +168,17 @@ BENCHMARK_CASES = [
         ],
         expected_decision="CAVEAT",
         expected_reason="The evidence supports the answer but lacks a date for freshness assessment.",
+        split="test",
     ),
-        make_case(
+    make_case(
         name="empty_evidence_case",
         query="What is machine learning?",
         answer="Machine learning is a method where computers learn patterns from data.",
         evidence=[],
         expected_decision="ABSTAIN",
         expected_reason="No evidence is available to support the answer.",
+        split="test",
     ),
-
     make_case(
         name="long_answer_unsupported_claim",
         query="What are the benefits of regular exercise?",
@@ -192,8 +195,8 @@ BENCHMARK_CASES = [
         ],
         expected_decision="CAVEAT",
         expected_reason="The evidence supports some claims but does not support the extreme claim that exercise prevents all diseases.",
+        split="test",
     ),
-
     make_case(
         name="directly_contradictory_evidence",
         query="Is the company profitable?",
@@ -212,8 +215,8 @@ BENCHMARK_CASES = [
         ],
         expected_decision="ESCALATE",
         expected_reason="Evidence from different sources directly conflicts about profitability.",
+        split="test",
     ),
-
     make_case(
         name="highly_ambiguous_query",
         query="What happened there?",
@@ -227,8 +230,8 @@ BENCHMARK_CASES = [
         ],
         expected_decision="ESCALATE",
         expected_reason="The query does not identify what 'there' or 'what happened' refers to.",
+        split="test",
     ),
-
     make_case(
         name="partial_support_across_chunks",
         query="What factors contributed to the city's growth?",
@@ -252,5 +255,10 @@ BENCHMARK_CASES = [
         ],
         expected_decision="CAVEAT",
         expected_reason="The evidence supports population growth and infrastructure but does not support the claim about increased investment.",
+        split="test",
     ),
 ]
+
+DEV_CASES = [c for c in BENCHMARK_CASES if c["split"] == "dev"]
+TEST_CASES = [c for c in BENCHMARK_CASES if c["split"] == "test"]
+

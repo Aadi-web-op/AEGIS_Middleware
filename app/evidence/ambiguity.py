@@ -58,6 +58,7 @@ class AmbiguitySignal(Signal):
             "that",
             "they",
             "them",
+            "there",
         }
 
         generic_count = sum(
@@ -76,11 +77,18 @@ class AmbiguitySignal(Signal):
 
         ambiguity = min(ambiguity, 1.0)
 
+        details = {
+            "word_count": len(words),
+            "generic_term_count": generic_count,
+        }
+        if ambiguity > 0.0:
+            details["clarifying_question"] = (
+                "Your question contains ambiguous or context-dependent terms. "
+                "Could you provide more detail on what you are asking about?"
+            )
+
         return SignalResult(
             value=round(ambiguity, 4),
             reasons=reasons,
-            details={
-                "word_count": len(words),
-                "generic_term_count": generic_count,
-            },
+            details=details,
         )

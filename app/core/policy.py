@@ -90,7 +90,14 @@ def decide(
         vetoes.append((Decision.ABSTAIN, Reason(
             code=ReasonCode.NO_EVIDENCE, message="No evidence was provided.")))
 
-    if signals.relevance is not None and signals.relevance < v.abstain_below_relevance:
+    ambiguity_fired = False
+    if signals.ambiguity is not None and signals.ambiguity >= v.escalate_above_ambiguity:
+        ambiguity_fired = True
+        vetoes.append((Decision.ESCALATE, Reason(
+            code=ReasonCode.AMBIGUOUS_QUERY,
+            message=f"The question is ambiguous (ambiguity {signals.ambiguity:.2f}).")))
+
+    if not ambiguity_fired and signals.relevance is not None and signals.relevance < v.abstain_below_relevance:
         vetoes.append((Decision.ABSTAIN, Reason(
             code=ReasonCode.LOW_RELEVANCE,
             message=f"Evidence is barely related to the question (relevance {signals.relevance:.2f}).")))
@@ -109,13 +116,6 @@ def decide(
         vetoes.append((Decision.CAVEAT, Reason(
             code=ReasonCode.STALE_EVIDENCE,
             message=f"The evidence may be outdated for a time-sensitive question (freshness {signals.freshness:.2f}).")))
-
-    ambiguity_fired = False
-    if signals.ambiguity is not None and signals.ambiguity >= v.escalate_above_ambiguity:
-        ambiguity_fired = True
-        vetoes.append((Decision.ESCALATE, Reason(
-            code=ReasonCode.AMBIGUOUS_QUERY,
-            message=f"The question is ambiguous (ambiguity {signals.ambiguity:.2f}).")))
 
     for name in score_result.unavailable:
         floor = Decision.ESCALATE if name in CRITICAL_SIGNALS else Decision.CAVEAT
