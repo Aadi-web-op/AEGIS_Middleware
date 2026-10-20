@@ -1,3 +1,4 @@
+
 import httpx
 
 from app.providers.base import LLMProvider, LLMResponse, ProviderError
@@ -20,9 +21,15 @@ class OpenAICompatibleProvider(LLMProvider):
         self.model = model
         self._url = base_url.rstrip("/") + "/chat/completions"
         self._headers = {"Content-Type": "application/json"}
+
         if api_key:
             self._headers["Authorization"] = f"Bearer {api_key}"
-        self._client = client if client is not None else httpx.Client(timeout=timeout_s)
+
+        self._client = (
+            client
+            if client is not None
+            else httpx.Client(timeout=timeout_s)
+        )
 
     def generate(
         self,
@@ -33,8 +40,10 @@ class OpenAICompatibleProvider(LLMProvider):
         max_tokens: int = 512,
     ) -> LLMResponse:
         messages = []
+
         if system:
             messages.append({"role": "system", "content": system})
+
         messages.append({"role": "user", "content": prompt})
 
         body = {
@@ -45,17 +54,51 @@ class OpenAICompatibleProvider(LLMProvider):
         }
 
         try:
-            response = self._client.post(self._url, json=body, headers=self._headers)
+            response = self._client.post(
+                self._url,
+                json=body,
+                headers=self._headers,
+            )
             response.raise_for_status()
+
             text = response.json()["choices"][0]["message"]["content"]
+
         except httpx.HTTPStatusError as exc:
-            raise ProviderError(f"{self.name}: HTTP {exc.response.status_code}") from exc
+            # Preserve the provider's explanation for debugging.
+            try:
+                error_body = exc.response.json()
+                if isinstance(error_body, dict):
+                    error_info = error_body.get("error", {})
+                    if isinstance(error_info, dict):
+                        detail = error_info.get("message")
+                    else:
+                        detail = str(error_info) if error_info else None
+                else:
+                    detail = None
+            except ValueError:
+                detail = None
+
+            if not detail:
+                detail = exc.response.text[:500] or "No error details returned"
+
+            raise ProviderError(
+                f"{self.name}: HTTP {exc.response.status_code}: {detail}"
+            ) from exc
+
         except httpx.HTTPError as exc:
-            raise ProviderError(f"{self.name}: request failed ({type(exc).__name__})") from exc
+            raise ProviderError(
+                f"{self.name}: request failed ({type(exc).__name__})"
+            ) from exc
+
         except (KeyError, IndexError, TypeError, ValueError) as exc:
-            raise ProviderError(f"{self.name}: unexpected response format") from exc
+            raise ProviderError(
+                f"{self.name}: unexpected response format"
+            ) from exc
 
         if not isinstance(text, str) or not text.strip():
             raise ProviderError(f"{self.name}: empty response")
-        return LLMResponse(text=text.strip(), provider=self.name)
-        
+
+        return LLMResponse(
+            text=text.strip(),
+            provider=self.name,
+        )

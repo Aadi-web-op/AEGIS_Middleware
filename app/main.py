@@ -1,4 +1,5 @@
 import os
+from app.rag.routes import router as rag_router
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,6 +27,7 @@ def create_app(evaluator: Evaluator | None = None) -> FastAPI:
                     "returned, caveated, escalated or withheld.",
     )
     app.state.evaluator = evaluator if evaluator is not None else Evaluator(default_signals())
+    app.include_router(rag_router)
 
     app.add_middleware(
         CORSMiddleware,
