@@ -21,14 +21,25 @@ class OpenAICompatibleProvider(LLMProvider):
         self.model = model
         self._url = base_url.rstrip("/") + "/chat/completions"
         self._headers = {"Content-Type": "application/json"}
+        self._api_key = api_key.strip().strip('"').strip("'") if api_key else None
 
-        if api_key:
-            self._headers["Authorization"] = f"Bearer {api_key}"
+        if self._api_key:
+            self._headers["Authorization"] = f"Bearer {self._api_key}"
 
         self._client = (
             client
             if client is not None
             else httpx.Client(timeout=timeout_s)
+        )
+
+    @staticmethod
+    def _requires_max_completion_tokens(model: str) -> bool:
+        lowered = model.lower()
+        return (
+            "gpt-oss" in lowered
+            or lowered.startswith("o1")
+            or lowered.startswith("o3")
+            or "deepseek-r1" in lowered
         )
 
     def generate(
@@ -49,9 +60,14 @@ class OpenAICompatibleProvider(LLMProvider):
         body = {
             "model": self.model,
             "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
         }
+
+        if self._requires_max_completion_tokens(self.model):
+            body["max_completion_tokens"] = max(max_tokens, 2048)
+            body["temperature"] = 1e-8 if temperature == 0.0 else temperature
+        else:
+            body["temperature"] = temperature
+            body["max_tokens"] = max_tokens
 
         try:
             response = self._client.post(
@@ -64,26 +80,30 @@ class OpenAICompatibleProvider(LLMProvider):
             text = response.json()["choices"][0]["message"]["content"]
 
         except httpx.HTTPStatusError as exc:
-            # Preserve the provider's explanation for debugging.
+            detail = None
             try:
                 error_body = exc.response.json()
                 if isinstance(error_body, dict):
                     error_info = error_body.get("error", {})
                     if isinstance(error_info, dict):
                         detail = error_info.get("message")
-                    else:
-                        detail = str(error_info) if error_info else None
-                else:
-                    detail = None
-            except ValueError:
+                    elif isinstance(error_info, str):
+                        detail = error_info
+                    elif "message" in error_body and isinstance(error_body["message"], str):
+                        detail = error_body["message"]
+                    elif "detail" in error_body and isinstance(error_body["detail"], str):
+                        detail = error_body["detail"]
+            except (ValueError, TypeError):
                 detail = None
 
-            if not detail:
-                detail = exc.response.text[:500] or "No error details returned"
+            if self._api_key and detail and self._api_key in detail:
+                detail = detail.replace(self._api_key, "[REDACTED]")
 
-            raise ProviderError(
-                f"{self.name}: HTTP {exc.response.status_code}: {detail}"
-            ) from exc
+            msg = f"{self.name}: HTTP {exc.response.status_code}"
+            if detail:
+                msg += f": {detail}"
+
+            raise ProviderError(msg) from exc
 
         except httpx.HTTPError as exc:
             raise ProviderError(

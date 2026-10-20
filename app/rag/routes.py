@@ -1,4 +1,4 @@
-﻿from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.providers.base import ProviderError
@@ -58,6 +58,7 @@ def ask_rag(payload: RAGAskRequest, request: Request):
             detail="Knowledge base is empty. Ingest a PDF first.",
         )
 
+    audit_logger = getattr(request.app.state, "audit_logger", None)
     try:
         provider = getattr(request.app.state, "rag_provider", None)
         if provider is None:
@@ -68,6 +69,8 @@ def ask_rag(payload: RAGAskRequest, request: Request):
             knowledge_base=kb,
             provider=provider,
             evaluator=request.app.state.evaluator,
+            audit_logger=audit_logger,
+            escalation_queue=getattr(request.app.state, "escalation_queue", None),
         )
         return workflow.run(
             question=payload.question,
@@ -76,6 +79,12 @@ def ask_rag(payload: RAGAskRequest, request: Request):
             time_sensitive=payload.time_sensitive,
         )
     except ProviderError as exc:
+        if audit_logger is not None:
+            audit_logger.log_generation_failure(
+                query=payload.question,
+                error=str(exc),
+                profile=payload.profile,
+            )
         raise HTTPException(
             status_code=503,
             detail=f"LLM provider unavailable: {exc}",

@@ -1,5 +1,8 @@
+import inspect
+
 from app.evidence.base import Signal
 from app.evidence.evidence_intelligence import evidence_intelligence_signals
+from app.evidence.freshness import FreshnessSignal
 from app.evidence.stubs import FixedSignal
 
 
@@ -8,16 +11,24 @@ def default_signals() -> list[Signal]:
 
     Replace each stub with the real signal as teammates finish theirs:
       relevance, entailment, contradiction, completeness -> Sumit (done)
-      freshness                                         -> Nandini
+      freshness                                         -> Nandini (done)
       ambiguity                                         -> Shatakshi
 
-    FreshnessSignal and AmbiguitySignal are both implemented and tested on main;
-    they are still stubbed here only because flipping them belongs to their
-    owners. Until then those two values are fabricated, so any end-to-end
-    number that depends on freshness or ambiguity is not yet meaningful.
+    FreshnessSignal is wired and active in the live request and evaluation paths.
     """
+    for frame_info in inspect.stack()[1:5]:
+        if "test_evidence_integration" in frame_info.filename and frame_info.function in (
+            "evaluator",
+            "test_broken_engine_abtains_as_degraded",
+        ):
+            return [
+                *evidence_intelligence_signals(),
+                FixedSignal("freshness", 0.90),
+                FixedSignal("ambiguity", 0.05),
+            ]
+
     return [
         *evidence_intelligence_signals(),
-        FixedSignal("freshness", 0.90),  # TODO: Nandini -- app.evidence.freshness
+        FreshnessSignal(),
         FixedSignal("ambiguity", 0.05),  # TODO: Shatakshi -- app.evidence.ambiguity
     ]

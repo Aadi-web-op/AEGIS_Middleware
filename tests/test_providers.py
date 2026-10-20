@@ -184,4 +184,48 @@ def test_no_usable_provider_raises():
 
 def test_default_providers_file_loads():
     assert len(load_providers_config().chain) >= 1
+
+
+def test_reasoning_model_uses_max_completion_tokens():
+    seen = {}
+
+    def handler(request):
+        seen["body"] = json.loads(request.content)
+        return ok_handler(request)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    provider = OpenAICompatibleProvider(
+        name="groq",
+        base_url="https://api.groq.com/openai/v1",
+        model="openai/gpt-oss-120b",
+        api_key="gsk_test",
+        client=client,
+    )
+    provider.generate("Q?", system="Be brief.", max_tokens=512)
+    body = seen["body"]
+    assert body["model"] == "openai/gpt-oss-120b"
+    assert "max_tokens" not in body
+    assert body["max_completion_tokens"] >= 2048
+    assert "temperature" in body
+
+
+def test_provider_sanitizes_quoted_and_whitespace_keys(monkeypatch):
+    monkeypatch.setenv("AEGIS_QUOTED_KEY", '  "gsk_clean_me"  \n')
+    config = ProvidersConfig(chain=[spec("groq", env="AEGIS_QUOTED_KEY")])
+    provider = build_provider(config)
+    assert isinstance(provider, OpenAICompatibleProvider)
+    assert provider._headers["Authorization"] == "Bearer gsk_clean_me"
+
+
+def test_structured_error_message_is_extracted():
+    def handler(request):
+        return httpx.Response(
+            400,
+            json={"error": {"message": "Invalid parameter: max_tokens", "type": "invalid_request_error"}},
+        )
+
+    with pytest.raises(ProviderError) as info:
+        make_provider(handler).generate("Q?")
+    assert "Invalid parameter: max_tokens" in str(info.value)
+
     
