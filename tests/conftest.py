@@ -23,3 +23,54 @@ def evidence_engine():
         evidence=["warm up the models for the test session"],
     )
     return engine
+
+
+class FakeNLI:
+    """A deterministic stand-in for `NLIRunner`.
+
+    Signal tests need exact entailment/contradiction probabilities to
+    assert on claim-level indices, which a real model cannot give. Pairs
+    not in `table` fall back to `default`, so a test only states the
+    pairs it cares about.
+    """
+
+    model_id = "fake/nli"
+
+    def __init__(self, table=None, default=(0.10, 0.10, 0.80)):
+        from aegis_core.models.nli import NLIPrediction
+
+        self._prediction = NLIPrediction
+        self.table = dict(table or {})
+        self.default = default
+        self.batches = []
+
+    def infer_batch(self, pairs):
+        self.batches.append(list(pairs))
+        out = []
+        for premise, hypothesis in pairs:
+            ent, con, neu = self.table.get((premise, hypothesis), self.default)
+            label = max(
+                (("entailment", ent), ("contradiction", con), ("neutral", neu)),
+                key=lambda item: item[1],
+            )[0]
+            out.append(
+                self._prediction(
+                    entailment=ent, contradiction=con, neutral=neu, label=label
+                )
+            )
+        return out
+
+
+class BrokenNLI:
+    """An NLI runner that always fails, for the degraded-model paths."""
+
+    model_id = "broken/nli"
+
+    def infer_batch(self, pairs):
+        raise RuntimeError("NLI model unavailable")
+
+
+@pytest.fixture
+def fake_nli():
+    """Factory: `fake_nli({(premise, hypothesis): (ent, con, neu)})`."""
+    return FakeNLI

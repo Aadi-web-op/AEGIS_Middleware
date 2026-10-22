@@ -10,7 +10,7 @@ dominant performance win on CPU (see models/nli.py).
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Tuple
 
 from aegis_core.signals.base import BaseSignal, SignalResult, SignalName
@@ -27,14 +27,55 @@ _FILLER_PATTERNS = (
 )
 
 
+# NLI label -> the claim status vocabulary the central schema already uses
+# (app.schemas.ClaimStatus). A claim the evidence neither entails nor
+# contradicts is UNSUPPORTED, not CONTRADICTED.
+_LABEL_TO_STATUS = {
+    "ENTAILMENT": "SUPPORTED",
+    "CONTRADICTION": "CONTRADICTED",
+    "NEUTRAL": "UNSUPPORTED",
+}
+
+
 @dataclass
 class ClaimResult:
-    """Result of verifying a single claim against the evidence."""
+    """Result of verifying a single claim against the evidence.
+
+    `evidence` / `evidence_scores` / `label` / `score` are the original
+    diagnostic fields and keep their meaning. The index fields are the
+    graph-facing addition: they name *which* evidence passage decided the
+    claim, using the index of the evidence list this signal was given.
+
+    The index lists are derived purely from the model's own threshold
+    crossings. They are empty when nothing crossed a threshold, and empty
+    when the NLI model was unavailable (`nli_available` tells the two
+    apart). Unlike `evidence`, they are never back-filled with a
+    "nearest" passage, so a consumer can trust that an index listed here
+    is a real model finding.
+    """
     claim: str
     label: str  # "ENTAILMENT" | "CONTRADICTION" | "NEUTRAL"
     score: float
     evidence: List[str]
     evidence_scores: List[float]
+    claim_index: int = 0
+    supporting_evidence_indices: List[int] = field(default_factory=list)
+    contradicting_evidence_indices: List[int] = field(default_factory=list)
+    reasons: List[str] = field(default_factory=list)
+    nli_available: bool = False
+
+    @property
+    def status(self) -> str:
+        """Claim status in the central schema's vocabulary."""
+        return _LABEL_TO_STATUS.get(self.label, "UNSUPPORTED")
+
+    @property
+    def evidence_indices(self) -> List[int]:
+        """Every evidence index that decided this claim, in ascending order."""
+        return sorted(
+            set(self.supporting_evidence_indices)
+            | set(self.contradicting_evidence_indices)
+        )
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -43,6 +84,15 @@ class ClaimResult:
             "score": round(self.score, 4),
             "evidence": self.evidence,
             "evidence_scores": [round(s, 4) for s in self.evidence_scores],
+            # --- claim-level detail for the decision graph ---
+            "claim_index": self.claim_index,
+            "status": self.status,
+            "support": round(self.score, 4),
+            "supporting_evidence_indices": list(self.supporting_evidence_indices),
+            "contradicting_evidence_indices": list(self.contradicting_evidence_indices),
+            "evidence_indices": self.evidence_indices,
+            "reasons": list(self.reasons),
+            "nli_available": self.nli_available,
         }
 
 
@@ -134,6 +184,11 @@ class EntailmentSignal(BaseSignal):
                 },
             )
 
+        # Indices reported in `details` refer to this list. Truncation keeps
+        # the prefix, so index i here is index i of the list handed to the
+        # signal; `evidence_truncated` says that higher indices exist but
+        # were never examined, so their absence is not a model finding.
+        supplied_count = len(evidence)
         evidence = evidence[: self.max_evidence_per_claim]
 
         claim_results = self._verify_claims(claims, evidence)
@@ -151,6 +206,11 @@ class EntailmentSignal(BaseSignal):
                 "evidence_count": len(evidence),
                 "nli_model": self.nli.model_id,
                 "checkable": True,
+                # --- index provenance for the decision graph ---
+                "evidence_considered": len(evidence),
+                "evidence_supplied": supplied_count,
+                "evidence_truncated": supplied_count > len(evidence),
+                "evidence_index_base": 0,
             },
         )
 
@@ -183,11 +243,12 @@ class EntailmentSignal(BaseSignal):
 
         results: List[ClaimResult] = []
         for ci, claim in enumerate(claims):
-            results.append(self._resolve_claim(claim, evidence, per_claim[ci]))
+            results.append(self._resolve_claim(ci, claim, evidence, per_claim[ci]))
         return results
 
     def _resolve_claim(
         self,
+        claim_index: int,
         claim: str,
         evidence: List[str],
         preds: List[Optional[Any]],
@@ -235,6 +296,25 @@ class EntailmentSignal(BaseSignal):
             best_label = "NEUTRAL"
             score = best_neutral * 0.5
 
+        # Evidence indices are read straight off the model's threshold
+        # crossings, independently of `best_label`. A claim that one passage
+        # entails and another contradicts therefore reports both, which is
+        # what the graph needs in order to draw both edges.
+        supporting_indices = [
+            ei for ei, p in enumerate(preds)
+            if p is not None and p.entailment >= self.entailment_threshold
+        ]
+        contradicting_indices = [
+            ei for ei, p in enumerate(preds)
+            if p is not None and p.contradiction >= self.contradiction_threshold
+        ]
+        nli_available = any(p is not None for p in preds)
+
+        # The textual `evidence` field keeps its original fallback: when no
+        # passage crossed a threshold it still shows the first passage, so
+        # existing readers see what they always saw. The index lists above
+        # deliberately stay empty in that case rather than naming a passage
+        # the model never actually implicated.
         if not supporting:
             supporting = evidence[:1]
 
@@ -244,7 +324,46 @@ class EntailmentSignal(BaseSignal):
             score=round(max(0.0, min(1.0, score)), 4),
             evidence=supporting[:3],
             evidence_scores=ent_scores,
+            claim_index=claim_index,
+            supporting_evidence_indices=supporting_indices,
+            contradicting_evidence_indices=contradicting_indices,
+            reasons=self._claim_reasons(
+                best_label, score, supporting_indices,
+                contradicting_indices, nli_available,
+            ),
+            nli_available=nli_available,
         )
+
+    def _claim_reasons(
+        self,
+        label: str,
+        score: float,
+        supporting: List[int],
+        contradicting: List[int],
+        nli_available: bool,
+    ) -> List[str]:
+        """Per-claim diagnostics, naming the evidence indices involved."""
+        if not nli_available:
+            return ["NLI model unavailable; this claim could not be verified."]
+
+        reasons: List[str] = []
+        if label == "ENTAILMENT" and supporting:
+            reasons.append(f"Entailed by evidence {supporting}.")
+        elif label == "CONTRADICTION" and contradicting:
+            reasons.append(f"Contradicted by evidence {contradicting}.")
+        elif label == "NEUTRAL":
+            reasons.append(
+                "No evidence passage entails or contradicts this claim "
+                f"above threshold (best neutral-weighted support {score:.2f})."
+            )
+
+        # A claim can be entailed by one source and contradicted by another.
+        if supporting and contradicting:
+            reasons.append(
+                f"Also contradicted by evidence {contradicting}; "
+                "sources disagree about this claim."
+            )
+        return reasons
 
     # ------------------------------------------------------------------
     def _aggregate_support(self, claim_results: List[ClaimResult]) -> float:
