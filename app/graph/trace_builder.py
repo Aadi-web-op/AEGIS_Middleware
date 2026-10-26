@@ -51,7 +51,14 @@ _DOCUMENT_ID_VERSIONED = "doc:{source}@{version}"
 # of being guessed from the message text. Reasons whose code is not listed
 # get a BECAUSE edge and no ABOUT edge, rather than a guessed one.
 _CLAIM_REASON_CODES = frozenset({"UNSUPPORTED_CLAIM"})
-_EVIDENCE_REASON_CODES = frozenset({"CONTRADICTION", "STALE_EVIDENCE"})
+# Only CONTRADICTION. The evidence a reason is attributed to here comes from
+# the contradiction signal's conflict pairs, which say nothing about which
+# passage is stale: STALE_EVIDENCE comes from the freshness signal, which
+# reports no evidence indices at all. Attributing it to whatever happened to
+# conflict would point the ABOUT edge at the wrong passages -- and at none
+# when a decision is stale but has no conflicts. It is left unattributed,
+# with its BECAUSE edge only, until freshness names its own indices.
+_EVIDENCE_REASON_CODES = frozenset({"CONTRADICTION"})
 
 _VERSION_PARTS = re.compile(r"\d+")
 
@@ -151,14 +158,27 @@ def build_trace(
     evidence_ids: Dict[int, str] = {}
     document_ids: Dict[int, str] = {}
     evidence_meta: List[Mapping[str, Any]] = list(evidence)
+    used_evidence_ids: set[str] = set()
 
     for index, item in enumerate(evidence_meta):
         chunk_id = item.get("chunk_id")
-        evidence_id = (
-            str(chunk_id)
-            if chunk_id
-            else _EVIDENCE_ID.format(request_id=request_id, index=index)
-        )
+        request_scoped_id = _EVIDENCE_ID.format(request_id=request_id, index=index)
+        evidence_id = str(chunk_id) if chunk_id else request_scoped_id
+        if evidence_id in used_evidence_ids:
+            # Two passages claiming one chunk id would otherwise become one
+            # node holding one passage's properties while both evidence
+            # indices pointed at it -- a claim supported by passage 0 and a
+            # conflict found in passage 1 would land on the same node. Fall
+            # back to the request-scoped id so the two stay distinct.
+            logger.warning(
+                "Evidence %s repeats chunk id %r; using the request-scoped id "
+                "%r instead so the two passages stay separate nodes",
+                index,
+                evidence_id,
+                request_scoped_id,
+            )
+            evidence_id = request_scoped_id
+        used_evidence_ids.add(evidence_id)
         evidence_ids[index] = evidence_id
 
         source = item.get("source")

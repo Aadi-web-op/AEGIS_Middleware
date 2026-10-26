@@ -144,9 +144,22 @@ class Neo4jGraphSink:
         if node_type == "Decision":
             # Rule 3: request_id is the Decision's identity, whatever else
             # the trace carries. `id` is kept as a property so that edges can
-            # match every node type uniformly on {id: ...}.
+            # match every node type uniformly on {id: ...} -- and it has to be
+            # the node's *own* id, because that is the name the trace's edges
+            # use. Overwriting it with the request_id is a silent data loss:
+            # `MATCH (a:Decision {id: ...})` would then find no row, Cypher
+            # skips the MERGE without raising, and the write reports success
+            # with every HAS_CLAIM and BECAUSE edge missing.
             props["request_id"] = request_id
-            props.setdefault("id", request_id)
+            props["id"] = node["id"]
+            if node["id"] != request_id:
+                logger.warning(
+                    "Decision node id %r is not the request_id %r; merging on "
+                    "the request_id per contract rule 3 and storing the node's "
+                    "own id, so this trace's Decision edges still resolve",
+                    node["id"],
+                    request_id,
+                )
             cypher = (
                 "MERGE (n:Decision {request_id: $merge_key})\n"
                 "SET n += $props"

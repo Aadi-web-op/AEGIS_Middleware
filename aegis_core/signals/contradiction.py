@@ -147,6 +147,7 @@ class ContradictionSignal(BaseSignal):
                     "numeric_mismatches": [],
                     "date_mismatches": [],
                     "conflicts": [],
+                    "nli_available": True,
                     "checkable": False,
                 },
             )
@@ -158,11 +159,20 @@ class ContradictionSignal(BaseSignal):
         evidence = evidence[: self.max_evidence]
         evidence_metadata = kwargs.get("evidence_metadata") or []
 
-        answer_conflicts, answer_numeric, answer_dates = self._check_answer_vs_evidence(
-            answer, evidence
-        )
-        ev_conflicts, ev_numeric, ev_dates = self._check_evidence_vs_evidence(evidence)
+        (
+            answer_conflicts,
+            answer_numeric,
+            answer_dates,
+            answer_nli_ok,
+        ) = self._check_answer_vs_evidence(answer, evidence)
+        (
+            ev_conflicts,
+            ev_numeric,
+            ev_dates,
+            ev_nli_ok,
+        ) = self._check_evidence_vs_evidence(evidence)
         version_conflicts = self._check_version_metadata(evidence, evidence_metadata)
+        nli_available = answer_nli_ok and ev_nli_ok
 
         all_conflicts = answer_conflicts + ev_conflicts + version_conflicts
         numeric_mismatches = answer_numeric + ev_numeric
@@ -172,7 +182,12 @@ class ContradictionSignal(BaseSignal):
             all_conflicts, numeric_mismatches, date_mismatches, len(evidence)
         )
         reasons = self._generate_reasons(
-            score, all_conflicts, numeric_mismatches, date_mismatches, evidence
+            score,
+            all_conflicts,
+            numeric_mismatches,
+            date_mismatches,
+            evidence,
+            nli_available,
         )
 
         # Built from the findings above, after scoring, and never passed back
@@ -199,6 +214,11 @@ class ContradictionSignal(BaseSignal):
                 "checkable": bool(answer.strip()) and bool(evidence),
                 # --- graph-facing conflict detail ---
                 "conflicts": graph_conflicts,
+                # False when the NLI model raised, so a consumer can tell
+                # "nothing conflicts" from "the statement-level check could
+                # not run". The score is unchanged either way; see the note
+                # in docs/decision-graph-proposal.md.
+                "nli_available": nli_available,
                 "evidence_considered": len(evidence),
                 "evidence_supplied": supplied_count,
                 "evidence_truncated": supplied_count > len(evidence),
@@ -211,20 +231,23 @@ class ContradictionSignal(BaseSignal):
     # ------------------------------------------------------------------
     def _check_answer_vs_evidence(
         self, answer: str, evidence: List[str]
-    ) -> Tuple[List[ConflictPair], List[Dict], List[Dict]]:
+    ) -> Tuple[List[ConflictPair], List[Dict], List[Dict], bool]:
+        """Returns (nli conflicts, numeric, dates, nli_available)."""
         conflicts: List[ConflictPair] = []
         numeric: List[Dict] = []
         dates: List[Dict] = []
 
         if not answer.strip():
-            return conflicts, numeric, dates
+            return conflicts, numeric, dates, True
 
         pairs = [(ev, answer) for ev in evidence]
+        nli_available = True
         try:
             preds = self.nli.infer_batch(pairs)
         except Exception as exc:
             logger.warning("NLI unavailable for contradiction check: %s", exc)
             preds = []
+            nli_available = False
 
         for ei, (ev, pred) in enumerate(zip(evidence, preds)):
             # Contradiction in either direction counts. An NLI model trained on
@@ -267,14 +290,15 @@ class ContradictionSignal(BaseSignal):
                     }
                 )
 
-        return conflicts, numeric, dates
+        return conflicts, numeric, dates, nli_available
 
     # ------------------------------------------------------------------
     # B. evidence vs evidence
     # ------------------------------------------------------------------
     def _check_evidence_vs_evidence(
         self, evidence: List[str]
-    ) -> Tuple[List[ConflictPair], List[Dict], List[Dict]]:
+    ) -> Tuple[List[ConflictPair], List[Dict], List[Dict], bool]:
+        """Returns (nli conflicts, numeric, dates, nli_available)."""
         conflicts: List[ConflictPair] = []
         numeric: List[Dict] = []
         dates: List[Dict] = []
@@ -284,11 +308,13 @@ class ContradictionSignal(BaseSignal):
             index_pairs = index_pairs[: self.max_pairs]
 
         nli_pairs = [(evidence[i], evidence[j]) for i, j in index_pairs]
+        nli_available = True
         try:
             preds = self.nli.infer_batch(nli_pairs)
         except Exception as exc:
             logger.warning("NLI unavailable for evidence conflict check: %s", exc)
             preds = []
+            nli_available = False
 
         for (i, j), pred in zip(index_pairs, preds):
             a, b = evidence[i], evidence[j]
@@ -332,7 +358,7 @@ class ContradictionSignal(BaseSignal):
                     }
                 )
 
-        return conflicts, numeric, dates
+        return conflicts, numeric, dates, nli_available
 
     # ------------------------------------------------------------------
     # C. version metadata
@@ -621,6 +647,7 @@ class ContradictionSignal(BaseSignal):
         numeric: List[Dict],
         dates: List[Dict],
         evidence: List[str],
+        nli_available: bool = True,
     ) -> List[str]:
         reasons: List[str] = []
 
@@ -652,7 +679,13 @@ class ContradictionSignal(BaseSignal):
             )
 
         if not reasons:
-            reasons.append("No contradiction detected between answer and evidence")
+            # Saying "none found" when nothing could be examined would be a
+            # false clean bill of health, so the degraded case says so.
+            reasons.append(
+                "Contradiction could not be checked: the NLI model was unavailable"
+                if not nli_available
+                else "No contradiction detected between answer and evidence"
+            )
 
         if score >= 0.8:
             reasons.append("High contradiction risk; evidence is inconsistent")

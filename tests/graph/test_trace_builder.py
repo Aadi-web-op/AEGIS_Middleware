@@ -265,6 +265,107 @@ def test_a_supported_claim_gets_no_unsupported_attribution():
     assert _edges(trace, "ABOUT") == []
 
 
+def test_a_stale_evidence_reason_is_not_attributed_to_whatever_conflicted():
+    """STALE_EVIDENCE comes from freshness, which names no evidence index.
+
+    Attributing it to the conflicting pair would make the graph say the
+    staleness is about passages 1 and 2 when it is passage 0 that is old --
+    and say nothing at all on a stale decision with no conflicts. Without a
+    structural basis it keeps its BECAUSE edge and gets no ABOUT.
+    """
+    evidence = [
+        {"text": "old", "source": "a.pdf"},
+        {"text": "x", "source": "b.pdf"},
+        {"text": "y", "source": "c.pdf"},
+    ]
+    trace = build_trace(
+        request_id="r12",
+        decision="ESCALATE",
+        evidence=evidence,
+        contradiction_details={
+            "conflicts": [
+                {
+                    "kind": "numeric",
+                    "scope": "evidence_vs_evidence",
+                    "index_a": 1,
+                    "index_b": 2,
+                    "graph_edge_eligible": True,
+                }
+            ]
+        },
+        reasons=[
+            {"code": "STALE_EVIDENCE", "message": "Evidence 0 is two years old."}
+        ],
+    )
+
+    assert _edges(trace, "ABOUT") == []
+    assert len(_edges(trace, "BECAUSE")) == 1
+    assert _edges(trace, "CONFLICTS_WITH"), "the conflict itself is still recorded"
+
+
+def test_a_contradiction_reason_is_still_attributed_to_the_conflicting_pair():
+    trace = build_trace(
+        request_id="r13",
+        decision="ESCALATE",
+        evidence=EVIDENCE,
+        contradiction_details={
+            "conflicts": [
+                {
+                    "kind": "numeric",
+                    "scope": "evidence_vs_evidence",
+                    "index_a": 0,
+                    "index_b": 1,
+                    "graph_edge_eligible": True,
+                }
+            ]
+        },
+        reasons=[{"code": "CONTRADICTION", "message": "18 versus 12."}],
+    )
+
+    about = _edges(trace, "ABOUT")
+    assert [edge["to"] for edge in about] == ["r13:evidence:0", "r13:evidence:1"]
+
+
+def test_a_repeated_chunk_id_does_not_collapse_two_passages(caplog):
+    """Two passages claiming one chunk id must stay two nodes.
+
+    Sharing the id would leave one node holding one passage's properties
+    with both evidence indices pointing at it, so a claim supported by
+    passage 0 and a conflict found in passage 1 would land on the same node.
+    """
+    evidence = [
+        {"text": "18 casual leaves per year.", "chunk_id": "c-1", "source": "a.pdf"},
+        {"text": "12 casual leaves per year.", "chunk_id": "c-1", "source": "b.pdf"},
+    ]
+    with caplog.at_level("WARNING"):
+        trace = build_trace(
+            request_id="r14",
+            decision="ESCALATE",
+            evidence=evidence,
+            contradiction_details={
+                "conflicts": [
+                    {
+                        "kind": "numeric",
+                        "scope": "evidence_vs_evidence",
+                        "index_a": 0,
+                        "index_b": 1,
+                        "graph_edge_eligible": True,
+                    }
+                ]
+            },
+        )
+
+    nodes = _nodes(trace, "Evidence")
+    assert [node["id"] for node in nodes] == ["c-1", "r14:evidence:1"]
+    assert [node["evidence_index"] for node in nodes] == [0, 1]
+    assert [node["source"] for node in nodes] == ["a.pdf", "b.pdf"]
+    assert "repeats chunk id" in caplog.text
+
+    conflict = _edges(trace, "CONFLICTS_WITH")[0]
+    assert conflict["from"] != conflict["to"], "the pair must not be one node"
+    assert validate_trace(trace)
+
+
 def test_reason_codes_may_be_enum_members():
     from app.schemas import Reason, ReasonCode
 

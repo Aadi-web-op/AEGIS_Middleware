@@ -139,6 +139,52 @@ def test_decision_properties_map(sink, driver, trace):
     assert props["headline"].startswith("Two versions")
 
 
+def test_a_decision_node_keeps_the_id_its_own_edges_name(sink, driver, caplog):
+    """A Decision id that is not the request_id must not cost it its edges.
+
+    Identity stays `request_id` (rule 3), but the stored `id` has to remain
+    the one the trace's edges name. Overwriting it with the request_id makes
+    `MATCH (a:Decision {id: ...})` match no row; Cypher then skips the MERGE
+    without raising, so the write reports success having silently dropped
+    every HAS_CLAIM and BECAUSE edge.
+    """
+    trace = {
+        "request_id": "req-77",
+        "decision": "ANSWER",
+        "nodes": [
+            {"id": "decision-node", "type": "Decision"},
+            {"id": "c0", "type": "Claim", "text": "A claim."},
+        ],
+        "edges": [{"type": "HAS_CLAIM", "from": "decision-node", "to": "c0"}],
+    }
+
+    with caplog.at_level(logging.WARNING):
+        assert sink.write_trace(trace) is True
+
+    props = driver.node_props("Decision")[0]
+    assert props["request_id"] == "req-77", "merged on the request_id"
+    assert props["id"] == "decision-node", "stored under the id its edges use"
+
+    merge = driver.node_merges("Decision")[0]
+    assert merge.params["merge_key"] == "req-77"
+
+    edge = driver.edge_merges("HAS_CLAIM")[0]
+    assert edge.params["from_id"] == props["id"], (
+        "the edge starts at an id that exists on the Decision node"
+    )
+    assert "is not the request_id" in caplog.text
+
+
+def test_the_usual_decision_id_is_the_request_id(sink, driver, trace, caplog):
+    with caplog.at_level(logging.WARNING):
+        sink.write_trace(trace)
+
+    props = driver.node_props("Decision")[0]
+    assert props["id"] == REQUEST_ID
+    assert props["request_id"] == REQUEST_ID
+    assert "is not the request_id" not in caplog.text
+
+
 def test_claim_properties_map(sink, driver, trace):
     sink.write_trace(trace)
     props = driver.node_props("Claim")[0]

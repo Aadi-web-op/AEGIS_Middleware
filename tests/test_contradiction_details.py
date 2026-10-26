@@ -200,6 +200,37 @@ def test_broken_nli_currently_disables_rule_based_conflicts_too():
     )
 
 
+def test_an_unavailable_model_is_reported_rather_than_read_as_clean():
+    """The 0.0 above must not be readable as "nothing conflicts".
+
+    Until the defect above is fixed, `details` has to say that the
+    statement-level check never ran, and the reasons must not claim a
+    clean bill of health the signal never established. The value is
+    deliberately untouched: no decision changes here.
+    """
+    signal = ContradictionSignal()
+    signal.nli = BrokenNLI()
+    result = signal.evaluate("q", ANSWER_18, [LEAVE_18, LEAVE_12])
+
+    assert result.details["nli_available"] is False
+    assert result.value == 0.0
+    assert "No contradiction detected" not in " ".join(result.reasons)
+    assert any("could not be checked" in reason for reason in result.reasons)
+
+
+def test_a_working_model_reports_itself_as_available():
+    clean = _signal().evaluate("q", ANSWER_18, [LEAVE_18])
+    assert clean.details["nli_available"] is True
+    assert clean.details["conflicts"] == []
+    assert "No contradiction detected" in " ".join(clean.reasons)
+
+    conflicting = _signal().evaluate("q", ANSWER_18, [LEAVE_18, LEAVE_12])
+    assert conflicting.details["nli_available"] is True
+
+    empty = _signal().evaluate("q", ANSWER_18, [])
+    assert empty.details["nli_available"] is True
+
+
 def test_duplicate_findings_are_not_reported_twice():
     result = _signal().evaluate("q", "", [LEAVE_18, LEAVE_12])
     keys = [
@@ -231,10 +262,10 @@ def test_projection_does_not_change_the_contradiction_score(answer, evidence, me
     signal = _signal()
     result = signal.evaluate("q", answer, list(evidence), evidence_metadata=metadata)
 
-    answer_conflicts, answer_numeric, answer_dates = signal._check_answer_vs_evidence(
-        answer, list(evidence)
+    answer_conflicts, answer_numeric, answer_dates, _ = (
+        signal._check_answer_vs_evidence(answer, list(evidence))
     )
-    ev_conflicts, ev_numeric, ev_dates = signal._check_evidence_vs_evidence(
+    ev_conflicts, ev_numeric, ev_dates, _ = signal._check_evidence_vs_evidence(
         list(evidence)
     )
     version_conflicts = signal._check_version_metadata(list(evidence), metadata or [])
@@ -259,6 +290,7 @@ def test_existing_detail_keys_are_preserved():
         "date_mismatches",
         "evidence_count",
         "checkable",
+        "nli_available",
     ):
         assert key in result.details, key
     assert result.details["numeric_mismatches"][0]["kind"] == "numeric"

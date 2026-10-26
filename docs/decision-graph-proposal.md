@@ -128,8 +128,16 @@ if one appears, so this is a one-line change later.
 the signal details, never by parsing message text:
 
 * `UNSUPPORTED_CLAIM` → `ABOUT` each non-`SUPPORTED` Claim
-* `CONTRADICTION`, `STALE_EVIDENCE` → `ABOUT` each Evidence in an eligible conflict
+* `CONTRADICTION` → `ABOUT` each Evidence in an eligible conflict
 * anything else → `BECAUSE` only, no `ABOUT`
+
+`STALE_EVIDENCE` was in the second line until review and has been removed.
+The evidence in that line comes from the contradiction signal's conflict
+pairs, which say nothing about which passage is stale; staleness comes from
+the freshness signal, which reports no evidence indices at all. Attributing
+it to whatever happened to conflict pointed `ABOUT` at the wrong passages,
+and at none when a decision was stale without any conflict. It now gets its
+`BECAUSE` edge and no `ABOUT`, until freshness names its own indices.
 
 **Aaradhya: is this the attribution you want, or should `Reason` carry the
 target explicitly in the contract?** An explicit field would be more robust
@@ -236,6 +244,30 @@ check that the rule itself detects 18 vs 12 fine on its own.
 The fix is to hoist the two rule calls out of the prediction loop. It wants
 its own branch and a policy conversation, since it would make some degraded
 evaluations escalate that currently answer.
+
+What this branch *does* do, because it changes no score and no decision, is
+stop the degraded path reading as a clean bill of health. The contradiction
+details now carry `nli_available`, false exactly when the model raised, and
+the fallback reason says "Contradiction could not be checked: the NLI model
+was unavailable" instead of "No contradiction detected". A consumer — the
+graph, the UI or the policy engine once the conversation above happens — can
+therefore tell "nothing conflicts" from "nothing was examined". The value
+stays `0.0`, so no decision moves on this branch.
+
+Two defects inside this add-on were found in review and **are** fixed here,
+since both are in files this branch owns and neither touches a score:
+
+* The writer merged a `Decision` on `request_id`, per rule 3, but also
+  overwrote the node's stored `id` with it. A trace whose Decision node id is
+  not the request_id then had every `HAS_CLAIM` and `BECAUSE` edge silently
+  dropped: `MATCH (a:Decision {id: ...})` matches no row, Cypher skips the
+  `MERGE` without raising, and `write_trace` still returns `True`. The node
+  now keeps its own `id` as a property, merges on `request_id` as before, and
+  logs a warning when the two differ.
+* Two evidence items carrying the same `chunk_id` became one Evidence node
+  holding one passage's properties, with both evidence indices pointing at
+  it. The second now falls back to the request-scoped id, with a warning, so
+  two passages are never conflated into one node.
 
 Also noted: `app/schemas.py` defines `Decision`, `RecommendedAction`,
 `ReasonCode` and `ClaimStatus` twice (lines 8–37 and 39–68). Harmless, since
