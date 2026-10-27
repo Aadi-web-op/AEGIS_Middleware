@@ -16,6 +16,19 @@ from app.graph.contract import (
     TraceContractError,
     validate_trace,
 )
+from app.graph.insights import (
+    conflicting_document_pairs,
+    escalations_by_root_cause,
+    frequent_abstain_topics,
+    impacted_decisions_for_document,
+    outdated_documents_retrieved,
+)
+from app.graph.schema import (
+    ALL_SCHEMA_STATEMENTS,
+    CONSTRAINTS,
+    INDEXES,
+    apply_schema,
+)
 from app.graph.sink import GraphSink, NullGraphSink, safe_write_trace
 
 __all__ = [
@@ -28,4 +41,13 @@ __all__ = [
     "GraphSink",
     "NullGraphSink",
     "safe_write_trace",
+    "apply_schema",
+    "ALL_SCHEMA_STATEMENTS",
+    "CONSTRAINTS",
+    "INDEXES",
+    "conflicting_document_pairs",
+    "outdated_documents_retrieved",
+    "frequent_abstain_topics",
+    "impacted_decisions_for_document",
+    "escalations_by_root_cause",
 ]

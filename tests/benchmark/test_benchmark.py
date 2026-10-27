@@ -6,9 +6,9 @@ from tests.benchmark.test_cases import BENCHMARK_CASES, DEV_CASES, TEST_CASES
 
 
 def test_benchmark_has_expected_coverage():
-    assert len(BENCHMARK_CASES) == 15
-    assert len(DEV_CASES) == 9
-    assert len(TEST_CASES) == 6
+    assert len(BENCHMARK_CASES) == 20
+    assert len(DEV_CASES) == 12
+    assert len(TEST_CASES) == 8
 
     all_decisions = {case["expected_decision"] for case in BENCHMARK_CASES}
     assert all_decisions == {"ANSWER", "CAVEAT", "ESCALATE", "ABSTAIN"}
@@ -18,6 +18,18 @@ def test_benchmark_has_expected_coverage():
 
 
 def test_benchmark_cases_have_required_fields():
+    valid_failure_types = {
+        "NONE",
+        "NO_EVIDENCE",
+        "LOW_RELEVANCE",
+        "UNSUPPORTED_CLAIM",
+        "CONTRADICTION",
+        "STALE_EVIDENCE",
+        "INCOMPLETE_EVIDENCE",
+        "AMBIGUOUS_QUERY",
+        "SIGNAL_UNAVAILABLE",
+    }
+
     for case in BENCHMARK_CASES:
         assert case["name"]
         assert case["request"].query
@@ -25,6 +37,7 @@ def test_benchmark_cases_have_required_fields():
         assert case["expected_decision"]
         assert case["expected_reason"]
         assert case["split"] in {"dev", "test"}
+        assert case.get("failure_type") in valid_failure_types
 
         assert case["expected_decision"] in {
             "ANSWER",
@@ -80,7 +93,6 @@ def test_locked_test_set_isolation():
     The test set is locked and preserved for the final evaluation run once all
     team semantics are settled, avoiding premature tuning leakage.
     """
-    assert len(TEST_CASES) == 6
+    assert len(TEST_CASES) == 8
     for case in TEST_CASES:
         assert case["split"] == "test"
-

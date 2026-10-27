@@ -11,6 +11,7 @@ def make_case(
     expected_decision,
     expected_reason,
     split="dev",
+    failure_type="NONE",
 ):
     return {
         "name": name,
@@ -22,6 +23,7 @@ def make_case(
         "expected_decision": expected_decision,
         "expected_reason": expected_reason,
         "split": split,
+        "failure_type": failure_type,
     }
 
 
@@ -39,6 +41,8 @@ BENCHMARK_CASES = [
         ],
         expected_decision="ANSWER",
         expected_reason="Strong evidence directly supports the answer.",
+        split="dev",
+        failure_type="NONE",
     ),
     make_case(
         name="partial_evidence_caveat",
@@ -53,6 +57,8 @@ BENCHMARK_CASES = [
         ],
         expected_decision="CAVEAT",
         expected_reason="The evidence supports part of the answer but does not fully support all claims.",
+        split="dev",
+        failure_type="UNSUPPORTED_CLAIM",
     ),
     make_case(
         name="contradictory_evidence_escalate",
@@ -72,6 +78,8 @@ BENCHMARK_CASES = [
         ],
         expected_decision="ESCALATE",
         expected_reason="Evidence sources directly conflict about the current status.",
+        split="dev",
+        failure_type="CONTRADICTION",
     ),
     make_case(
         name="no_evidence_abstain",
@@ -80,6 +88,8 @@ BENCHMARK_CASES = [
         evidence=[],
         expected_decision="ABSTAIN",
         expected_reason="There is no evidence supporting the answer.",
+        split="dev",
+        failure_type="NO_EVIDENCE",
     ),
     make_case(
         name="ambiguous_query_escalate",
@@ -94,6 +104,8 @@ BENCHMARK_CASES = [
         ],
         expected_decision="ESCALATE",
         expected_reason="The query does not identify what 'it' refers to.",
+        split="dev",
+        failure_type="AMBIGUOUS_QUERY",
     ),
     make_case(
         name="stale_evidence_caveat",
@@ -108,6 +120,8 @@ BENCHMARK_CASES = [
         ],
         expected_decision="CAVEAT",
         expected_reason="The evidence is substantially outdated for a current-value question.",
+        split="dev",
+        failure_type="STALE_EVIDENCE",
     ),
     make_case(
         name="unsupported_claim_abstain",
@@ -122,6 +136,8 @@ BENCHMARK_CASES = [
         ],
         expected_decision="ABSTAIN",
         expected_reason="The evidence does not support the strong claim that the treatment is completely safe.",
+        split="dev",
+        failure_type="UNSUPPORTED_CLAIM",
     ),
     make_case(
         name="low_relevance_abstain",
@@ -136,6 +152,8 @@ BENCHMARK_CASES = [
         ],
         expected_decision="ABSTAIN",
         expected_reason="The available evidence is unrelated to the query.",
+        split="dev",
+        failure_type="LOW_RELEVANCE",
     ),
     make_case(
         name="mixed_evidence_caveat",
@@ -155,6 +173,8 @@ BENCHMARK_CASES = [
         ],
         expected_decision="ANSWER",
         expected_reason="Multiple evidence items support the answer and its qualification.",
+        split="dev",
+        failure_type="NONE",
     ),
     make_case(
         name="missing_date_signal_case",
@@ -168,7 +188,8 @@ BENCHMARK_CASES = [
         ],
         expected_decision="CAVEAT",
         expected_reason="The evidence supports the answer but lacks a date for freshness assessment.",
-        split="test",
+        split="dev",
+        failure_type="STALE_EVIDENCE",
     ),
     make_case(
         name="empty_evidence_case",
@@ -177,7 +198,8 @@ BENCHMARK_CASES = [
         evidence=[],
         expected_decision="ABSTAIN",
         expected_reason="No evidence is available to support the answer.",
-        split="test",
+        split="dev",
+        failure_type="NO_EVIDENCE",
     ),
     make_case(
         name="long_answer_unsupported_claim",
@@ -195,7 +217,8 @@ BENCHMARK_CASES = [
         ],
         expected_decision="CAVEAT",
         expected_reason="The evidence supports some claims but does not support the extreme claim that exercise prevents all diseases.",
-        split="test",
+        split="dev",
+        failure_type="UNSUPPORTED_CLAIM",
     ),
     make_case(
         name="directly_contradictory_evidence",
@@ -216,6 +239,7 @@ BENCHMARK_CASES = [
         expected_decision="ESCALATE",
         expected_reason="Evidence from different sources directly conflicts about profitability.",
         split="test",
+        failure_type="CONTRADICTION",
     ),
     make_case(
         name="highly_ambiguous_query",
@@ -231,6 +255,7 @@ BENCHMARK_CASES = [
         expected_decision="ESCALATE",
         expected_reason="The query does not identify what 'there' or 'what happened' refers to.",
         split="test",
+        failure_type="AMBIGUOUS_QUERY",
     ),
     make_case(
         name="partial_support_across_chunks",
@@ -256,9 +281,98 @@ BENCHMARK_CASES = [
         expected_decision="CAVEAT",
         expected_reason="The evidence supports population growth and infrastructure but does not support the claim about increased investment.",
         split="test",
+        failure_type="UNSUPPORTED_CLAIM",
+    ),
+    make_case(
+        name="incomplete_evidence_multi_aspect",
+        query="What is the hostel accommodation fee and what are the library operating hours?",
+        answer="Hostel fee is $500 per semester and the library is open 24 hours daily.",
+        evidence=[
+            {
+                "text": "Hostel accommodation fee is fixed at $500 per semester.",
+                "source": "fee_structure_2026.pdf",
+                "date": datetime.date.today(),
+            }
+        ],
+        expected_decision="CAVEAT",
+        expected_reason="Evidence only covers hostel fee; library operating hours are missing.",
+        split="test",
+        failure_type="INCOMPLETE_EVIDENCE",
+    ),
+    make_case(
+        name="conflicting_circular_dates",
+        query="When is the deadline for semester course registration?",
+        answer="Course registration closes on August 15.",
+        evidence=[
+            {
+                "text": "Course registration closes on August 15.",
+                "source": "academic_calendar_v1.pdf",
+                "version": "v1",
+                "date": datetime.date.today(),
+            },
+            {
+                "text": "Course registration has been extended to August 25.",
+                "source": "academic_calendar_v2.pdf",
+                "version": "v2",
+                "date": datetime.date.today(),
+            },
+        ],
+        expected_decision="ESCALATE",
+        expected_reason="Two academic circulars state conflicting registration deadlines.",
+        split="test",
+        failure_type="CONTRADICTION",
+    ),
+    make_case(
+        name="stale_curfew_policy",
+        query="What is the current campus curfew time for residents?",
+        answer="The campus curfew time for residents is 9 PM.",
+        evidence=[
+            {
+                "text": "Hostel residents must be inside the hostel premises by 9 PM.",
+                "source": "hostel_rules_2012.pdf",
+                "version": "v1",
+                "date": datetime.date(2012, 8, 1),
+            }
+        ],
+        expected_decision="CAVEAT",
+        expected_reason="The curfew evidence is from 2012 and substantially outdated for current rules.",
+        split="test",
+        failure_type="STALE_EVIDENCE",
+    ),
+    make_case(
+        name="completely_unrelated_passage",
+        query="What is the minimum GPA required for the merit scholarship?",
+        answer="The minimum GPA required for the merit scholarship is 3.8.",
+        evidence=[
+            {
+                "text": "The campus dining facility serves breakfast between 7:30 AM and 9:30 AM on weekdays.",
+                "source": "campus_dining.txt",
+                "date": datetime.date.today(),
+            }
+        ],
+        expected_decision="ABSTAIN",
+        expected_reason="The retrieved dining passage is completely unrelated to the scholarship query.",
+        split="test",
+        failure_type="LOW_RELEVANCE",
+    ),
+    make_case(
+        name="fully_supported_multi_claim",
+        query="What are the book borrowing limits and loan duration for students?",
+        answer="Students can borrow up to 5 books for a loan duration of 14 days.",
+        evidence=[
+            {
+                "text": "Enrolled students may borrow up to 5 library books for a loan duration of 14 days.",
+                "source": "library_policy_2026.pdf",
+                "version": "v3",
+                "date": datetime.date.today(),
+            }
+        ],
+        expected_decision="ANSWER",
+        expected_reason="Every claim is directly supported by the current official library policy.",
+        split="test",
+        failure_type="NONE",
     ),
 ]
 
 DEV_CASES = [c for c in BENCHMARK_CASES if c["split"] == "dev"]
 TEST_CASES = [c for c in BENCHMARK_CASES if c["split"] == "test"]
-

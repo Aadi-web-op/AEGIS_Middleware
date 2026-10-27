@@ -30,7 +30,10 @@ class AmbiguitySignal(Signal):
                         message="The query is empty and cannot be interpreted reliably.",
                     )
                 ],
-                details={"reason": "empty_query"},
+                details={
+                    "reason": "empty_query",
+                    "clarifying_question": "Your question is empty. Could you please specify what you would like to know?",
+                },
             )
 
         words = query.split()
@@ -61,12 +64,14 @@ class AmbiguitySignal(Signal):
             "there",
         }
 
-        generic_count = sum(
-            1 for word in words
+        # Check for multiple distinct generic/context-dependent terms
+        generic_words_found = {
+            word.lower().strip(".,?!")
+            for word in words
             if word.lower().strip(".,?!") in generic_terms
-        )
+        }
 
-        if generic_count >= 2:
+        if len(generic_words_found) >= 2:
             ambiguity += 0.3
             reasons.append(
                 Reason(
@@ -79,7 +84,7 @@ class AmbiguitySignal(Signal):
 
         details = {
             "word_count": len(words),
-            "generic_term_count": generic_count,
+            "generic_term_count": len(generic_words_found),
         }
         if ambiguity > 0.0:
             details["clarifying_question"] = (
