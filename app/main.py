@@ -1,5 +1,6 @@
 import logging
 import os
+from app.insights import insights_router
 from app.rag.routes import router as rag_router
 
 from fastapi import FastAPI, Request
@@ -40,6 +41,7 @@ def create_app(
     app.state.escalation_queue = escalation_queue if escalation_queue is not None else EscalationQueue()
     app.include_router(rag_router)
     app.include_router(escalation_router)
+    app.include_router(insights_router)
 
     app.add_middleware(
         CORSMiddleware,
