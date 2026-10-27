@@ -11,10 +11,45 @@ from aegis_core.utils.numeric_date import find_numeric_conflicts, find_date_conf
 
 logger = logging.getLogger(__name__)
 
+# Conflict text carried in `details` is a preview, never a full passage.
+_PREVIEW_CHARS = 120
+
+
+def _fmt_value(value: Any) -> Optional[str]:
+    """Render a detected numeric value as a short string ("18", not "18.0")."""
+    if value is None:
+        return None
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+# Internal conflict_type -> the conflict kind vocabulary used by the
+# decision graph. "nli" is a disagreement between statements with no
+# scalar value to compare, hence "statement".
+_KIND = {
+    "nli": "statement",
+    "numeric": "numeric",
+    "date": "date",
+    "version": "version",
+}
+
+# Scopes whose conflicts are between two evidence passages, and so can
+# become an evidence-to-evidence edge in the graph. An answer-vs-evidence
+# conflict has only one evidence index and is reported as a diagnostic.
+_PAIRED_SCOPES = ("evidence_vs_evidence", "version")
+
 
 @dataclass
 class ConflictPair:
-    """A detected conflict between two text spans."""
+    """A detected conflict between two text spans.
+
+    `index_a` / `index_b` are positions in the evidence list this signal
+    was given, or None where the span is not an evidence passage (the
+    answer has no evidence index). `scope` says what the two sides are,
+    so a consumer can tell an evidence-to-evidence conflict from an
+    answer-to-evidence one without inspecting `source_a`.
+    """
     text_a: str
     text_b: str
     source_a: Optional[str] = None
@@ -23,6 +58,9 @@ class ConflictPair:
     severity: str = "medium"  # low | medium | high
     score: float = 0.5
     details: Dict[str, Any] = field(default_factory=dict)
+    index_a: Optional[int] = None
+    index_b: Optional[int] = None
+    scope: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -34,6 +72,9 @@ class ConflictPair:
             "severity": self.severity,
             "score": self.score,
             "details": self.details,
+            "index_a": self.index_a,
+            "index_b": self.index_b,
+            "scope": self.scope,
         }
 
 
@@ -105,18 +146,33 @@ class ContradictionSignal(BaseSignal):
                     "conflicting_pairs": [],
                     "numeric_mismatches": [],
                     "date_mismatches": [],
+                    "conflicts": [],
+                    "nli_available": True,
                     "checkable": False,
                 },
             )
 
+        # Indices reported in `details` refer to this list. Truncation keeps
+        # the prefix, so index i here is index i of the list the signal was
+        # given; `evidence_truncated` says higher indices were never compared.
+        supplied_count = len(evidence)
         evidence = evidence[: self.max_evidence]
         evidence_metadata = kwargs.get("evidence_metadata") or []
 
-        answer_conflicts, answer_numeric, answer_dates = self._check_answer_vs_evidence(
-            answer, evidence
-        )
-        ev_conflicts, ev_numeric, ev_dates = self._check_evidence_vs_evidence(evidence)
+        (
+            answer_conflicts,
+            answer_numeric,
+            answer_dates,
+            answer_nli_ok,
+        ) = self._check_answer_vs_evidence(answer, evidence)
+        (
+            ev_conflicts,
+            ev_numeric,
+            ev_dates,
+            ev_nli_ok,
+        ) = self._check_evidence_vs_evidence(evidence)
         version_conflicts = self._check_version_metadata(evidence, evidence_metadata)
+        nli_available = answer_nli_ok and ev_nli_ok
 
         all_conflicts = answer_conflicts + ev_conflicts + version_conflicts
         numeric_mismatches = answer_numeric + ev_numeric
@@ -126,7 +182,19 @@ class ContradictionSignal(BaseSignal):
             all_conflicts, numeric_mismatches, date_mismatches, len(evidence)
         )
         reasons = self._generate_reasons(
-            score, all_conflicts, numeric_mismatches, date_mismatches, evidence
+            score,
+            all_conflicts,
+            numeric_mismatches,
+            date_mismatches,
+            evidence,
+            nli_available,
+        )
+
+        # Built from the findings above, after scoring, and never passed back
+        # into it. The score's interpretation is unchanged: higher still means
+        # more contradiction, and it is not inverted here or anywhere else.
+        graph_conflicts = self._graph_conflicts(
+            all_conflicts, numeric_mismatches, date_mismatches, evidence_metadata
         )
 
         return SignalResult(
@@ -144,6 +212,17 @@ class ContradictionSignal(BaseSignal):
                 "evidence_count": len(evidence),
                 "nli_model": self.nli.model_id,
                 "checkable": bool(answer.strip()) and bool(evidence),
+                # --- graph-facing conflict detail ---
+                "conflicts": graph_conflicts,
+                # False when the NLI model raised, so a consumer can tell
+                # "nothing conflicts" from "the statement-level check could
+                # not run". The score is unchanged either way; see the note
+                # in docs/decision-graph-proposal.md.
+                "nli_available": nli_available,
+                "evidence_considered": len(evidence),
+                "evidence_supplied": supplied_count,
+                "evidence_truncated": supplied_count > len(evidence),
+                "evidence_index_base": 0,
             },
         )
 
@@ -152,22 +231,25 @@ class ContradictionSignal(BaseSignal):
     # ------------------------------------------------------------------
     def _check_answer_vs_evidence(
         self, answer: str, evidence: List[str]
-    ) -> Tuple[List[ConflictPair], List[Dict], List[Dict]]:
+    ) -> Tuple[List[ConflictPair], List[Dict], List[Dict], bool]:
+        """Returns (nli conflicts, numeric, dates, nli_available)."""
         conflicts: List[ConflictPair] = []
         numeric: List[Dict] = []
         dates: List[Dict] = []
 
         if not answer.strip():
-            return conflicts, numeric, dates
+            return conflicts, numeric, dates, True
 
         pairs = [(ev, answer) for ev in evidence]
+        nli_available = True
         try:
             preds = self.nli.infer_batch(pairs)
         except Exception as exc:
             logger.warning("NLI unavailable for contradiction check: %s", exc)
             preds = []
+            nli_available = False
 
-        for ev, pred in zip(evidence, preds):
+        for ei, (ev, pred) in enumerate(zip(evidence, preds)):
             # Contradiction in either direction counts. An NLI model trained on
             # (premise, hypothesis) asymmetry can miss a conflict if we only test
             # one ordering.
@@ -176,26 +258,47 @@ class ContradictionSignal(BaseSignal):
                     ConflictPair(
                         text_a=answer,
                         text_b=ev,
+                        source_b=f"evidence[{ei}]",
                         conflict_type="nli",
                         severity="high" if pred.contradiction >= 0.9 else "medium",
                         score=pred.contradiction,
                         details=pred.to_dict(),
+                        index_a=None,  # the answer is not an evidence passage
+                        index_b=ei,
+                        scope="answer_vs_evidence",
                     )
                 )
 
             for conflict in find_numeric_conflicts(answer, ev):
-                numeric.append({"scope": "answer_vs_evidence", **conflict})
+                numeric.append(
+                    {
+                        "scope": "answer_vs_evidence",
+                        "index_a": None,
+                        "index_b": ei,
+                        "source_b": f"evidence[{ei}]",
+                        **conflict,
+                    }
+                )
             for conflict in find_date_conflicts(answer, ev):
-                dates.append({"scope": "answer_vs_evidence", **conflict})
+                dates.append(
+                    {
+                        "scope": "answer_vs_evidence",
+                        "index_a": None,
+                        "index_b": ei,
+                        "source_b": f"evidence[{ei}]",
+                        **conflict,
+                    }
+                )
 
-        return conflicts, numeric, dates
+        return conflicts, numeric, dates, nli_available
 
     # ------------------------------------------------------------------
     # B. evidence vs evidence
     # ------------------------------------------------------------------
     def _check_evidence_vs_evidence(
         self, evidence: List[str]
-    ) -> Tuple[List[ConflictPair], List[Dict], List[Dict]]:
+    ) -> Tuple[List[ConflictPair], List[Dict], List[Dict], bool]:
+        """Returns (nli conflicts, numeric, dates, nli_available)."""
         conflicts: List[ConflictPair] = []
         numeric: List[Dict] = []
         dates: List[Dict] = []
@@ -205,11 +308,13 @@ class ContradictionSignal(BaseSignal):
             index_pairs = index_pairs[: self.max_pairs]
 
         nli_pairs = [(evidence[i], evidence[j]) for i, j in index_pairs]
+        nli_available = True
         try:
             preds = self.nli.infer_batch(nli_pairs)
         except Exception as exc:
             logger.warning("NLI unavailable for evidence conflict check: %s", exc)
             preds = []
+            nli_available = False
 
         for (i, j), pred in zip(index_pairs, preds):
             a, b = evidence[i], evidence[j]
@@ -224,6 +329,9 @@ class ContradictionSignal(BaseSignal):
                         severity="high" if pred.contradiction >= 0.9 else "medium",
                         score=pred.contradiction,
                         details=pred.to_dict(),
+                        index_a=i,
+                        index_b=j,
+                        scope="evidence_vs_evidence",
                     )
                 )
 
@@ -231,6 +339,8 @@ class ContradictionSignal(BaseSignal):
                 numeric.append(
                     {
                         "scope": "evidence_vs_evidence",
+                        "index_a": i,
+                        "index_b": j,
                         "source_a": f"evidence[{i}]",
                         "source_b": f"evidence[{j}]",
                         **conflict,
@@ -240,13 +350,15 @@ class ContradictionSignal(BaseSignal):
                 dates.append(
                     {
                         "scope": "evidence_vs_evidence",
+                        "index_a": i,
+                        "index_b": j,
                         "source_a": f"evidence[{i}]",
                         "source_b": f"evidence[{j}]",
                         **conflict,
                     }
                 )
 
-        return conflicts, numeric, dates
+        return conflicts, numeric, dates, nli_available
 
     # ------------------------------------------------------------------
     # C. version metadata
@@ -290,9 +402,194 @@ class ContradictionSignal(BaseSignal):
                             "version_b": ver_b,
                             "topic_overlap": round(overlap, 3),
                         },
+                        index_a=i,
+                        index_b=j,
+                        scope="version",
                     )
                 )
         return conflicts
+
+    # ------------------------------------------------------------------
+    # D. graph-facing projection
+    # ------------------------------------------------------------------
+    def _graph_conflicts(
+        self,
+        nli_and_version: List[ConflictPair],
+        numeric: List[Dict[str, Any]],
+        dates: List[Dict[str, Any]],
+        metadata: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Flatten every detected conflict into one graph-ready list.
+
+        This is a *projection* of findings that were already made and
+        scored. It detects nothing of its own and is never fed back into
+        `_score_contradiction`, so adding it cannot move the contradiction
+        score.
+
+        `graph_edge_eligible` is the honesty flag the graph writer keys on:
+        it is True only for a conflict between two evidence passages whose
+        indices are both known. An answer-vs-evidence conflict, or a
+        conflict whose source pair could not be established, is still
+        reported here as a diagnostic but is marked ineligible, so the
+        graph omits the edge instead of inventing one.
+        """
+        out: List[Dict[str, Any]] = []
+        seen = set()
+
+        def emit(entry: Dict[str, Any]) -> None:
+            indices = [i for i in (entry["index_a"], entry["index_b"]) if i is not None]
+            entry["evidence_indices"] = indices
+            entry["graph_edge_eligible"] = (
+                entry["scope"] in _PAIRED_SCOPES
+                and entry["index_a"] is not None
+                and entry["index_b"] is not None
+            )
+            key = (
+                entry["kind"], entry["scope"], tuple(indices),
+                entry["value_a"], entry["value_b"],
+            )
+            if key in seen:
+                return
+            seen.add(key)
+            out.append(entry)
+
+        for pair in nli_and_version:
+            kind = _KIND.get(pair.conflict_type, pair.conflict_type)
+            if kind == "version":
+                reason = (
+                    f"Version mismatch: {pair.details.get('version_a')} vs "
+                    f"{pair.details.get('version_b')} on the same topic."
+                )
+                value_a = pair.details.get("version_a")
+                value_b = pair.details.get("version_b")
+            else:
+                reason = (
+                    "Natural-language inference reports the two statements "
+                    f"contradict (p={pair.score:.2f})."
+                )
+                # A statement-level disagreement has no scalar value to report.
+                value_a = value_b = None
+            emit(
+                self._conflict_entry(
+                    kind=kind,
+                    scope=pair.scope,
+                    index_a=pair.index_a,
+                    index_b=pair.index_b,
+                    value_a=value_a,
+                    value_b=value_b,
+                    text_a=pair.text_a,
+                    text_b=pair.text_b,
+                    reason=reason,
+                    severity=pair.severity,
+                    score=pair.score,
+                    metadata=metadata,
+                    fallback_source_a=pair.source_a,
+                    fallback_source_b=pair.source_b,
+                )
+            )
+
+        for conflict in numeric:
+            emit(
+                self._conflict_entry(
+                    kind="numeric",
+                    scope=str(conflict.get("scope") or ""),
+                    index_a=conflict.get("index_a"),
+                    index_b=conflict.get("index_b"),
+                    value_a=_fmt_value(conflict.get("value_a")),
+                    value_b=_fmt_value(conflict.get("value_b")),
+                    text_a=str(conflict.get("text_a") or ""),
+                    text_b=str(conflict.get("text_b") or ""),
+                    reason=(
+                        f"Numeric mismatch: {conflict.get('text_a')} vs "
+                        f"{conflict.get('text_b')}."
+                    ),
+                    severity="high",
+                    score=1.0,
+                    metadata=metadata,
+                    fallback_source_a=conflict.get("source_a"),
+                    fallback_source_b=conflict.get("source_b"),
+                    extra={
+                        "family": conflict.get("family"),
+                        "unit_a": conflict.get("unit_a"),
+                        "unit_b": conflict.get("unit_b"),
+                        "qualifier_a": conflict.get("qualifier_a"),
+                        "qualifier_b": conflict.get("qualifier_b"),
+                    },
+                )
+            )
+
+        for conflict in dates:
+            date_a = conflict.get("date_a") or {}
+            date_b = conflict.get("date_b") or {}
+            value_a = date_a.get("iso") or date_a.get("text")
+            value_b = date_b.get("iso") or date_b.get("text")
+            emit(
+                self._conflict_entry(
+                    kind="date",
+                    scope=str(conflict.get("scope") or ""),
+                    index_a=conflict.get("index_a"),
+                    index_b=conflict.get("index_b"),
+                    value_a=value_a,
+                    value_b=value_b,
+                    text_a=str(date_a.get("text") or ""),
+                    text_b=str(date_b.get("text") or ""),
+                    reason=f"Date mismatch: {value_a} vs {value_b}.",
+                    severity="high",
+                    score=1.0,
+                    metadata=metadata,
+                    fallback_source_a=conflict.get("source_a"),
+                    fallback_source_b=conflict.get("source_b"),
+                )
+            )
+
+        return out
+
+    @staticmethod
+    def _conflict_entry(
+        *,
+        kind: str,
+        scope: str,
+        index_a: Optional[int],
+        index_b: Optional[int],
+        value_a: Any,
+        value_b: Any,
+        text_a: str,
+        text_b: str,
+        reason: str,
+        severity: str,
+        score: float,
+        metadata: List[Dict[str, Any]],
+        fallback_source_a: Optional[str] = None,
+        fallback_source_b: Optional[str] = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Build one conflict record, resolving source/version from metadata."""
+        meta_a = metadata[index_a] if index_a is not None and index_a < len(metadata) else {}
+        meta_b = metadata[index_b] if index_b is not None and index_b < len(metadata) else {}
+        entry: Dict[str, Any] = {
+            "kind": kind,
+            "scope": scope,
+            "index_a": index_a,
+            "index_b": index_b,
+            "value_a": value_a,
+            "value_b": value_b,
+            # Previews only. The graph writer re-enforces its own cap; this
+            # keeps full passage text out of the details payload entirely.
+            "text_a": text_a[:_PREVIEW_CHARS],
+            "text_b": text_b[:_PREVIEW_CHARS],
+            "source_a": (meta_a.get("source") if meta_a else None) or fallback_source_a,
+            "source_b": (meta_b.get("source") if meta_b else None) or fallback_source_b,
+            "version_a": meta_a.get("version") if meta_a else None,
+            "version_b": meta_b.get("version") if meta_b else None,
+            "date_a": meta_a.get("date") if meta_a else None,
+            "date_b": meta_b.get("date") if meta_b else None,
+            "reason": reason,
+            "severity": severity,
+            "score": round(float(score), 4),
+        }
+        if extra:
+            entry.update({k: v for k, v in extra.items() if v is not None})
+        return entry
 
     @staticmethod
     def _token_overlap(a: str, b: str) -> float:
@@ -350,6 +647,7 @@ class ContradictionSignal(BaseSignal):
         numeric: List[Dict],
         dates: List[Dict],
         evidence: List[str],
+        nli_available: bool = True,
     ) -> List[str]:
         reasons: List[str] = []
 
@@ -381,7 +679,13 @@ class ContradictionSignal(BaseSignal):
             )
 
         if not reasons:
-            reasons.append("No contradiction detected between answer and evidence")
+            # Saying "none found" when nothing could be examined would be a
+            # false clean bill of health, so the degraded case says so.
+            reasons.append(
+                "Contradiction could not be checked: the NLI model was unavailable"
+                if not nli_available
+                else "No contradiction detected between answer and evidence"
+            )
 
         if score >= 0.8:
             reasons.append("High contradiction risk; evidence is inconsistent")
