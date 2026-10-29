@@ -20,7 +20,7 @@ profiles:
       escalate_above_contradiction: 0.70
       escalate_below_support: 0.30
       caveat_below_freshness: 0.30
-      escalate_above_ambiguity: 0.70
+      escalate_above_ambiguity: 0.50
 
   standard:
     description: General organisational assistant
@@ -33,7 +33,7 @@ profiles:
       escalate_above_contradiction: 0.60
       escalate_below_support: 0.40
       caveat_below_freshness: 0.40
-      escalate_above_ambiguity: 0.60
+      escalate_above_ambiguity: 0.30
 
   strict:
     description: Medical, legal, finance, compliance
@@ -46,6 +46,6 @@ profiles:
       escalate_above_contradiction: 0.40
       escalate_below_support: 0.50
       caveat_below_freshness: 0.50
-      escalate_above_ambiguity: 0.50
+      escalate_above_ambiguity: 0.30
     answer_min_signal: 0.60
     
