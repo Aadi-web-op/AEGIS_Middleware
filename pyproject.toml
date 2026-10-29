@@ -18,4 +18,4 @@ dependencies = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["app*"]
+include = ["app*", "aegis_core*"]

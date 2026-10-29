@@ -119,4 +119,39 @@ def test_internal_crash_fails_closed():
     assert r.json()["fail_closed"] is True
     assert "boom" not in r.text
 
-    
+
+def test_evaluate_returns_trace_and_headline():
+    r = client_with().post("/v1/evaluate", json=PAYLOAD)
+    assert r.status_code == 200
+    body = r.json()
+    assert "trace" in body
+    trace = body["trace"]
+    assert trace is not None
+    assert trace["request_id"] == body["request_id"]
+    assert trace["decision"] == "ANSWER"
+    assert trace["headline"] == "Safe to show. Every statement in the answer is backed by current documents."
+    assert any(n["type"] == "Decision" for n in trace["nodes"])
+    assert any(n["type"] == "Evidence" for n in trace["nodes"])
+
+
+def test_insights_without_neo4j_returns_503():
+    client = client_with()
+    assert client.get("/v1/insights/conflicts").status_code == 503
+    assert client.get("/v1/insights/outdated").status_code == 503
+    assert client.get("/v1/insights/abstains").status_code == 503
+    assert client.get("/v1/insights/impact?source=policy.pdf").status_code == 503
+    assert client.get("/v1/insights/escalations").status_code == 503
+
+
+def test_insights_with_driver_returns_results():
+    from tests.graph.test_insights import MockQueryDriver
+
+    mock_driver = MockQueryDriver(
+        canned_results=[{"source_a": "a.pdf", "source_b": "b.pdf", "conflict_count": 2}]
+    )
+    client = TestClient(create_app(neo4j_driver=mock_driver))
+    r = client.get("/v1/insights/conflicts?limit=5")
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data) == 1
+    assert data[0]["conflict_count"] == 2

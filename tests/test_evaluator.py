@@ -64,6 +64,25 @@ class ConflictingContradiction(Signal):
         )
 
 
+class EntailmentWithClaims(Signal):
+    name = "entailment"
+
+    def score(self, query, answer, evidence):
+        return SignalResult(
+            value=0.95,
+            details={
+                "claims": [
+                    {
+                        "claim": "Employees get 18 casual leaves.",
+                        "status": "SUPPORTED",
+                        "support": 0.95,
+                        "evidence_indices": [0],
+                    }
+                ]
+            },
+        )
+
+
 def without(name):
     return [s for s in stubs() if s.name != name]
 
@@ -76,6 +95,8 @@ def test_clean_request_is_answered():
     assert resp.latency_ms is not None
     assert resp.policy_version == "0.1.0"
     assert resp.request_id
+    assert resp.trace is not None
+    assert resp.trace["request_id"] == resp.request_id
 
 
 def test_no_evidence_abstains_without_calling_any_signal():
@@ -84,6 +105,8 @@ def test_no_evidence_abstains_without_calling_any_signal():
     assert resp.decision == Decision.ABSTAIN
     assert resp.reasons[0].code == ReasonCode.NO_EVIDENCE
     assert counter.calls == 0
+    assert resp.trace is not None
+    assert resp.trace["decision"] == "ABSTAIN"
 
 
 def test_contradiction_escalates_even_though_score_is_high():
@@ -146,4 +169,39 @@ def test_duplicate_signal_names_rejected():
 def test_unknown_signal_name_rejected():
     with pytest.raises(ValueError):
         Evaluator([FixedSignal("vibes", 1)])
-        
+
+
+def test_evaluator_populates_claims():
+    ev = Evaluator(without("entailment") + [EntailmentWithClaims()])
+    resp = ev.evaluate(REQ)
+    assert len(resp.claims) == 1
+    assert resp.claims[0].claim == "Employees get 18 casual leaves."
+    assert resp.claims[0].status == "SUPPORTED"
+    assert resp.claims[0].evidence_indices == [0]
+
+
+def test_evaluator_writes_to_graph_sink():
+    class RecordingSink:
+        def __init__(self):
+            self.traces = []
+
+        def write_trace(self, trace):
+            self.traces.append(trace)
+            return True
+
+    sink = RecordingSink()
+    ev = Evaluator(stubs(), graph_sink=sink)
+    resp = ev.evaluate(REQ)
+    assert len(sink.traces) == 1
+    assert sink.traces[0]["request_id"] == resp.request_id
+    assert resp.trace["request_id"] == resp.request_id
+
+
+def test_evaluator_exploding_sink_does_not_affect_decision():
+    class CrashingSink:
+        def write_trace(self, trace):
+            raise RuntimeError("Neo4j database down!")
+
+    ev = Evaluator(stubs(), graph_sink=CrashingSink())
+    resp = ev.evaluate(REQ)
+    assert resp.decision == Decision.ANSWER

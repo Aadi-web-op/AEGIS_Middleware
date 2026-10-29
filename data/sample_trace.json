@@ -1,0 +1,179 @@
+{
+  "request_id": "req-canonical-sample-01",
+  "decision": "ESCALATE",
+  "headline": "Two versions of the leave policy disagree on the allowance.",
+  "nodes": [
+    {
+      "id": "req-canonical-sample-01",
+      "type": "Decision",
+      "request_id": "req-canonical-sample-01",
+      "decision": "ESCALATE",
+      "headline": "Two versions of the leave policy disagree on the allowance.",
+      "answerability_score": 0.41,
+      "policy_version": "0.1.0",
+      "profile": "standard"
+    },
+    {
+      "id": "req-canonical-sample-01:evidence:0",
+      "type": "Evidence",
+      "evidence_index": 0,
+      "preview": "Full-time employees are entitled to 18 casual leaves per year.",
+      "source": "hr-policy.pdf",
+      "version": "2023.1",
+      "date": "2023-04-01"
+    },
+    {
+      "id": "doc:hr-policy.pdf@2023.1",
+      "type": "Document",
+      "source": "hr-policy.pdf",
+      "version": "2023.1",
+      "date": "2023-04-01"
+    },
+    {
+      "id": "req-canonical-sample-01:evidence:1",
+      "type": "Evidence",
+      "evidence_index": 1,
+      "preview": "Employees are entitled to 12 casual leaves per year.",
+      "source": "hr-policy.pdf",
+      "version": "2024.2",
+      "date": "2024-04-01"
+    },
+    {
+      "id": "doc:hr-policy.pdf@2024.2",
+      "type": "Document",
+      "source": "hr-policy.pdf",
+      "version": "2024.2",
+      "date": "2024-04-01"
+    },
+    {
+      "id": "req-canonical-sample-01:evidence:2",
+      "type": "Evidence",
+      "evidence_index": 2,
+      "preview": "Casual leave entitlement is reviewed annually by the human resources committee, which publishes the revised allowance in",
+      "source": "staff-handbook.pdf",
+      "version": "7",
+      "date": "2024-01-15"
+    },
+    {
+      "id": "doc:staff-handbook.pdf@7",
+      "type": "Document",
+      "source": "staff-handbook.pdf",
+      "version": "7",
+      "date": "2024-01-15"
+    },
+    {
+      "id": "req-canonical-sample-01:claim:0",
+      "type": "Claim",
+      "claim_index": 0,
+      "text": "Employees receive 18 casual leaves.",
+      "status": "SUPPORTED",
+      "support": 0.91,
+      "nli_available": true
+    },
+    {
+      "id": "req-canonical-sample-01:reason:0",
+      "type": "Reason",
+      "code": "CONTRADICTION",
+      "message": "Two policy passages disagree."
+    },
+    {
+      "id": "req-canonical-sample-01:reason:1",
+      "type": "Reason",
+      "code": "UNSUPPORTED_CLAIM",
+      "message": "One claim is not fully supported."
+    }
+  ],
+  "edges": [
+    {
+      "type": "FROM",
+      "from": "req-canonical-sample-01:evidence:0",
+      "to": "doc:hr-policy.pdf@2023.1"
+    },
+    {
+      "type": "FROM",
+      "from": "req-canonical-sample-01:evidence:1",
+      "to": "doc:hr-policy.pdf@2024.2"
+    },
+    {
+      "type": "FROM",
+      "from": "req-canonical-sample-01:evidence:2",
+      "to": "doc:staff-handbook.pdf@7"
+    },
+    {
+      "type": "HAS_CLAIM",
+      "from": "req-canonical-sample-01",
+      "to": "req-canonical-sample-01:claim:0"
+    },
+    {
+      "type": "SUPPORTED_BY",
+      "from": "req-canonical-sample-01:claim:0",
+      "to": "req-canonical-sample-01:evidence:0",
+      "evidence_index": 0,
+      "support": 0.91
+    },
+    {
+      "type": "CONTRADICTED_BY",
+      "from": "req-canonical-sample-01:claim:0",
+      "to": "req-canonical-sample-01:evidence:1",
+      "evidence_index": 1,
+      "support": 0.91
+    },
+    {
+      "type": "CONFLICTS_WITH",
+      "from": "req-canonical-sample-01:evidence:0",
+      "to": "req-canonical-sample-01:evidence:1",
+      "kind": "version",
+      "value_a": "2023.1",
+      "value_b": "2024.2",
+      "reason": "Version mismatch: 2023.1 vs 2024.2 on the same topic.",
+      "severity": "medium",
+      "score": 0.8333
+    },
+    {
+      "type": "SUPERSEDES",
+      "from": "doc:hr-policy.pdf@2024.2",
+      "to": "doc:hr-policy.pdf@2023.1"
+    },
+    {
+      "type": "CONFLICTS_WITH",
+      "from": "req-canonical-sample-01:evidence:0",
+      "to": "req-canonical-sample-01:evidence:1",
+      "kind": "numeric",
+      "value_a": "18",
+      "value_b": "12",
+      "reason": "Numeric mismatch: 18 vs 12.",
+      "severity": "high",
+      "score": 1.0
+    },
+    {
+      "type": "BECAUSE",
+      "from": "req-canonical-sample-01",
+      "to": "req-canonical-sample-01:reason:0"
+    },
+    {
+      "type": "ABOUT",
+      "from": "req-canonical-sample-01:reason:0",
+      "to": "req-canonical-sample-01:evidence:0"
+    },
+    {
+      "type": "ABOUT",
+      "from": "req-canonical-sample-01:reason:0",
+      "to": "req-canonical-sample-01:evidence:1"
+    },
+    {
+      "type": "BECAUSE",
+      "from": "req-canonical-sample-01",
+      "to": "req-canonical-sample-01:reason:1"
+    }
+  ],
+  "reasons": [
+    {
+      "code": "CONTRADICTION",
+      "message": "Two policy passages disagree."
+    },
+    {
+      "code": "UNSUPPORTED_CLAIM",
+      "message": "One claim is not fully supported."
+    }
+  ]
+}

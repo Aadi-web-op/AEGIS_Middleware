@@ -5,36 +5,6 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-class Decision(str, Enum):
-    ANSWER = "ANSWER"
-    CAVEAT = "CAVEAT"
-    ESCALATE = "ESCALATE"
-    ABSTAIN = "ABSTAIN"
-
-
-class RecommendedAction(str, Enum):
-    RETURN_ANSWER = "return_answer"
-    RETURN_WITH_CAVEAT = "return_with_caveat"
-    ASK_CLARIFYING_QUESTION = "ask_clarifying_question"
-    ESCALATE_TO_HUMAN = "escalate_to_human"
-    ABSTAIN = "abstain"
-
-
-class ReasonCode(str, Enum):
-    NO_EVIDENCE = "NO_EVIDENCE"
-    LOW_RELEVANCE = "LOW_RELEVANCE"
-    UNSUPPORTED_CLAIM = "UNSUPPORTED_CLAIM"
-    CONTRADICTION = "CONTRADICTION"
-    STALE_EVIDENCE = "STALE_EVIDENCE"
-    INCOMPLETE_EVIDENCE = "INCOMPLETE_EVIDENCE"
-    AMBIGUOUS_QUERY = "AMBIGUOUS_QUERY"
-    SIGNAL_UNAVAILABLE = "SIGNAL_UNAVAILABLE"
-
-
-class ClaimStatus(str, Enum):
-    SUPPORTED = "SUPPORTED"
-    UNSUPPORTED = "UNSUPPORTED"
-    CONTRADICTED = "CONTRADICTED"
 
 class Decision(str, Enum):
     ANSWER = "ANSWER"
@@ -66,6 +36,7 @@ class ClaimStatus(str, Enum):
     SUPPORTED = "SUPPORTED"
     UNSUPPORTED = "UNSUPPORTED"
     CONTRADICTED = "CONTRADICTED"
+
 
 class EvidenceItem(BaseModel):
     text: str = Field(min_length=1)
@@ -101,14 +72,13 @@ class ClaimResult(BaseModel):
     support: float = Field(ge=0.0, le=1.0)
     evidence_indices: list[int] = Field(default_factory=list)
 
+
 class EvaluateRequest(BaseModel):
     query: str = Field(min_length=1)
     answer: str = Field(min_length=1)
     evidence: list[EvidenceItem] = Field(default_factory=list)
     profile: str = "standard"
     time_sensitive: bool = True
-
-
 
 
 class EvaluateResponse(BaseModel):
@@ -124,4 +94,4 @@ class EvaluateResponse(BaseModel):
     degraded: bool = False
     policy_version: str = "0.1.0"
     latency_ms: float | None = None
-    
+    trace: dict[str, Any] | None = None
