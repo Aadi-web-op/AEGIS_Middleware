@@ -1,4 +1,6 @@
 import os
+import logging
+
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +10,8 @@ from app.core.config import UnknownProfileError
 from app.core.evaluator import Evaluator
 from app.evidence.registry import default_signals
 from app.schemas import EvaluateRequest, EvaluateResponse
+
+logger = logging.getLogger(__name__)
 
 API_VERSION = "0.1.0"
 DEFAULT_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
@@ -38,6 +42,17 @@ def create_app(evaluator: Evaluator | None = None) -> FastAPI:
     async def unknown_profile_handler(request: Request, exc: UnknownProfileError):
         return JSONResponse(status_code=422, content={"detail": str(exc)})
 
+    @app.exception_handler(Exception)
+    async def fail_closed_handler(request: Request, exc: Exception):
+        logger.exception("Unhandled error while serving %s", request.url.path)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": "Aegis could not evaluate this request. Treat the answer as ABSTAIN.",
+                "fail_closed": True,
+            },
+        )
+        
     @app.get("/v1/health")
     def health():
         ev = app.state.evaluator

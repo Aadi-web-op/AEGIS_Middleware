@@ -105,4 +105,18 @@ def test_cors_allows_the_frontend_origin():
     )
     assert r.status_code == 200
     assert r.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+
+class ExplodingEvaluator:
+    def evaluate(self, request):
+        raise RuntimeError("boom")
+
+
+def test_internal_crash_fails_closed():
+    client = TestClient(create_app(ExplodingEvaluator()), raise_server_exceptions=False)
+    r = client.post("/v1/evaluate", json=PAYLOAD)
+    assert r.status_code == 500
+    assert r.json()["fail_closed"] is True
+    assert "boom" not in r.text
+
     
