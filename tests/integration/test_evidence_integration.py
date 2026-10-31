@@ -12,9 +12,14 @@ The full path under test:
 These load real models, so they are slow. The adapter's own mapping rules are
 covered without models in tests/test_evidence_intelligence.py.
 
-Caveat on freshness and ambiguity: both signals exist on main but are still
-wired as FixedSignal in app/evidence/registry.py, pending their owners. Any
-assertion here therefore deliberately avoids depending on either value.
+Freshness and ambiguity are real signals in the live wiring
+(`app.evidence.registry.default_signals`). These tests are about the
+Evidence Intelligence Engine, so they pin those two to constants via
+`FixedSignal` to keep the engine's contribution isolated and the
+assertions stable. That substitution is made *here*, explicitly, and
+never by `default_signals()` itself -- see
+`test_the_live_registry_wires_every_real_signal`, which asserts the live
+registry returns no stubs at all.
 """
 
 import datetime
@@ -24,16 +29,30 @@ import pytest
 from app.core.evaluator import Evaluator
 from app.evidence.evidence_intelligence import evidence_intelligence_signals
 from app.evidence.registry import default_signals
+from app.evidence.stubs import FixedSignal
 from app.schemas import Decision, EvaluateRequest, ReasonCode, RecommendedAction
 
 TODAY = datetime.date.today()
 
 
+def pinned_context_signals() -> list[FixedSignal]:
+    """Freshness and ambiguity held constant so the engine is what varies.
+
+    Values chosen to be unremarkable: fresh evidence, an unambiguous query.
+    Neither should push a decision on its own.
+    """
+    return [FixedSignal("freshness", 0.90), FixedSignal("ambiguity", 0.05)]
+
+
 @pytest.fixture(scope="module")
 def evaluator(evidence_engine):
     """Evaluator wired to the warmed session engine from conftest."""
-    stubs = [s for s in default_signals() if s.name in {"freshness", "ambiguity"}]
-    return Evaluator([*evidence_intelligence_signals(engine=evidence_engine), *stubs])
+    return Evaluator(
+        [
+            *evidence_intelligence_signals(engine=evidence_engine),
+            *pinned_context_signals(),
+        ]
+    )
 
 
 def evaluate(evaluator, query, answer, evidence, profile="standard"):
@@ -244,9 +263,11 @@ def test_engine_failure_degrades_instead_of_crashing(evidence_engine):
         def evaluate(self, **kwargs):
             raise RuntimeError("NLI model unavailable")
 
-    stubs = [s for s in default_signals() if s.name in {"freshness", "ambiguity"}]
     evaluator = Evaluator(
-        [*evidence_intelligence_signals(engine=BrokenEngine()), *stubs]
+        [
+            *evidence_intelligence_signals(engine=BrokenEngine()),
+            *pinned_context_signals(),
+        ]
     )
 
     response = evaluate(
@@ -324,15 +345,39 @@ def test_an_unknown_profile_is_rejected(evaluator):
 # --------------------------------------------------------------------------
 # The engine is actually the thing being invoked
 # --------------------------------------------------------------------------
-def test_the_live_registry_wires_the_real_engine():
-    """Guards against the four signals silently reverting to stubs."""
-    by_name = {s.name: s for s in default_signals()}
+def test_the_live_registry_wires_every_real_signal():
+    """Guards against any signal silently reverting to a stub.
+
+    The live registry previously inspected `inspect.stack()` and handed this
+    test file `FixedSignal` stand-ins for freshness and ambiguity, so the
+    API's own wiring was never actually asserted. Nothing in production may
+    behave differently because a test is on the call stack, and no signal in
+    `default_signals()` may be a stub.
+    """
+    signals = default_signals()
+    by_name = {s.name: s for s in signals}
+
+    assert set(by_name) == {
+        "relevance",
+        "entailment",
+        "contradiction",
+        "completeness",
+        "freshness",
+        "ambiguity",
+    }, f"unexpected live signal set: {sorted(by_name)}"
 
     for name in ("relevance", "entailment", "contradiction", "completeness"):
         assert "aegis_core" in type(by_name[name]).__module__ or hasattr(
             by_name[name], "intelligence"
         ), f"{name} is not backed by the Evidence Intelligence Engine"
-        assert not by_name[name].run("q", "a", []).details.get("stub")
+
+    assert type(by_name["freshness"]).__name__ == "FreshnessSignal"
+    assert type(by_name["ambiguity"]).__name__ == "AmbiguitySignal"
+
+    # No signal may be a FixedSignal, and none may report itself as a stub.
+    for name, signal in by_name.items():
+        assert not isinstance(signal, FixedSignal), f"{name} is a FixedSignal"
+        assert not signal.run("q", "a", []).details.get("stub"), f"{name} is a stub"
 
 
 def test_one_request_costs_one_engine_call(evaluator, evidence_engine):
