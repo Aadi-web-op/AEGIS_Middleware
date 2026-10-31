@@ -4,12 +4,10 @@
  * Converts an AEGIS EvaluateResponse (the `trace` object) into a
  * { nodes, edges } graph structure compatible with DecisionGraph.
  *
- * If `trace.graph` is already present (populated by the backend in the future),
- * it is returned directly. Otherwise the graph is synthesised from the
- * claims/reasons fields that the current backend already returns.
- *
- * This function is the single integration point: the graph component
- * never accesses the raw trace directly.
+ * Supports:
+ * 1. Canonical backend Decision Graph format (`trace.nodes` & `trace.edges` with from/to)
+ * 2. Pre-formatted frontend structure (`trace.graph`)
+ * 3. Synthesis fallback from `trace.claims` and `trace.reasons`
  */
 
 let _nodeCounter = 0;
@@ -20,12 +18,64 @@ function uid(prefix) {
 export function buildGraphFromTrace(trace) {
   if (!trace) return { nodes: [], edges: [] };
 
-  // If the backend has already populated a graph block, use it directly.
+  // 1. If trace has pre-formatted graph block, use it directly.
   if (trace.graph && Array.isArray(trace.graph.nodes)) {
     return trace.graph;
   }
 
-  // Synthesise from the current response schema.
+  // 2. Canonical Aegis trace contract: trace.nodes and trace.edges
+  if (Array.isArray(trace.nodes) && Array.isArray(trace.edges)) {
+    const nodes = trace.nodes.map((n) => {
+      let label = n.label;
+      if (!label) {
+        if (n.type === "Decision") {
+          label = `Decision: ${n.decision ?? trace.decision ?? "UNKNOWN"}`;
+        } else if (n.type === "Claim") {
+          label = n.text
+            ? (n.text.length > 50 ? n.text.slice(0, 50) + "…" : n.text)
+            : `Claim ${n.claim_index ?? ""}`;
+        } else if (n.type === "Evidence") {
+          label = n.preview
+            ? (n.preview.length > 50 ? n.preview.slice(0, 50) + "…" : n.preview)
+            : (n.source ?? "Evidence");
+        } else if (n.type === "Document") {
+          label = `${n.source ?? "Doc"}${n.version ? ` (${n.version})` : ""}`;
+        } else if (n.type === "Reason") {
+          label = (n.code ?? "Reason").replaceAll("_", " ");
+        } else {
+          label = n.id;
+        }
+      }
+
+      return {
+        id: n.id,
+        type: n.type,
+        label,
+        properties: {
+          ...n,
+          status: n.status,
+          outcome: n.decision,
+          text: n.text ?? n.preview,
+        },
+      };
+    });
+
+    const edges = trace.edges.map((e, idx) => ({
+      id: e.id ?? `e-${idx}`,
+      source: e.source ?? e.from,
+      target: e.target ?? e.to,
+      type: e.type,
+      properties: {
+        ...e,
+        conflict_kind: e.kind ?? e.conflict_kind,
+        inferred: e.type === "SUPERSEDES" || e.inferred,
+      },
+    }));
+
+    return { nodes, edges };
+  }
+
+  // 3. Synthesise from flat response schema (if trace object is an EvaluateResponse)
   const nodes = [];
   const edges = [];
 
