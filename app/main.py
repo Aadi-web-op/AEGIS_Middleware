@@ -6,8 +6,10 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.audit import AuditLogger
 from app.core.config import UnknownProfileError
 from app.core.evaluator import Evaluator
+from app.escalation import EscalationQueue, escalation_router
 from app.evidence.registry import default_signals
 from app.graph.insights import (
     conflicting_document_pairs,
@@ -18,7 +20,9 @@ from app.graph.insights import (
 )
 from app.graph.neo4j_sink import Neo4jGraphSink
 from app.graph.sink import GraphSink
-from app.schemas import EvaluateRequest, EvaluateResponse
+from app.insights import insights_router
+from app.rag.routes import router as rag_router
+from app.schemas import Decision, EvaluateRequest, EvaluateResponse, RecommendedAction
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +54,8 @@ def create_app(
     evaluator: Evaluator | None = None,
     neo4j_driver: Any | None = None,
     graph_sink: GraphSink | None = None,
+    audit_logger: AuditLogger | None = None,
+    escalation_queue: EscalationQueue | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="Aegis",
@@ -72,11 +78,19 @@ def create_app(
         evaluator.graph_sink = Neo4jGraphSink(driver)
 
     app.state.evaluator = evaluator
+    app.state.audit_logger = audit_logger if audit_logger is not None else AuditLogger()
+    app.state.escalation_queue = (
+        escalation_queue if escalation_queue is not None else EscalationQueue()
+    )
+
+    app.include_router(rag_router)
+    app.include_router(escalation_router)
+    app.include_router(insights_router)
 
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_allowed_origins(),
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["*"],
     )
 
@@ -111,7 +125,39 @@ def create_app(
 
     @app.post("/v1/evaluate", response_model=EvaluateResponse)
     def evaluate(payload: EvaluateRequest):
-        return app.state.evaluator.evaluate(payload)
+        response = app.state.evaluator.evaluate(payload)
+
+        audit_log = getattr(app.state, "audit_logger", None)
+        if audit_log is not None:
+            try:
+                audit_log.log_evaluation(payload, response)
+            except Exception as exc:
+                logger.warning("Failed to log evaluation: %s", exc)
+
+        escalation_q = getattr(app.state, "escalation_queue", None)
+        if escalation_q is not None and (
+            response.decision == Decision.ESCALATE
+            or response.recommended_action == RecommendedAction.ESCALATE_TO_HUMAN
+        ):
+            reason_msg = (
+                "; ".join(r.message for r in response.reasons)
+                if response.reasons
+                else "Evaluator escalated case to human review."
+            )
+            try:
+                escalation_q.enqueue(
+                    request_id=response.request_id,
+                    reason=reason_msg,
+                    decision=response.decision.value,
+                    query=payload.query,
+                    answer=payload.answer,
+                    notes=f"Auto-escalated by policy. Action: {response.recommended_action.value}",
+                    raise_on_duplicate=False,
+                )
+            except Exception as exc:
+                logger.warning("Failed to auto-enqueue escalation: %s", exc)
+
+        return response
 
     # ---------------------------------------------------------------------------
     # /v1/insights/* endpoints exposing Shatakshi's cross-decision Neo4j queries

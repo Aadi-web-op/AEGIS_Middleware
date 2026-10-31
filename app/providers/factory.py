@@ -49,9 +49,14 @@ def build_provider(config: ProvidersConfig | None = None) -> LLMProvider:
             continue
         api_key = None
         if spec.api_key_env:
-            api_key = os.environ.get(spec.api_key_env)
-            if not api_key:
+            raw_key = os.environ.get(spec.api_key_env)
+            if not raw_key:
                 logger.warning("Skipping %s: environment variable %s is not set",
+                               spec.name, spec.api_key_env)
+                continue
+            api_key = raw_key.strip().strip('"').strip("'")
+            if not api_key:
+                logger.warning("Skipping %s: environment variable %s is empty",
                                spec.name, spec.api_key_env)
                 continue
         providers.append(OpenAICompatibleProvider(

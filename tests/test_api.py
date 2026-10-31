@@ -155,3 +155,41 @@ def test_insights_with_driver_returns_results():
     data = r.json()
     assert len(data) == 1
     assert data[0]["conflict_count"] == 2
+
+
+def test_rag_ask_empty_question_is_422():
+    client = client_with()
+    r = client.post("/v1/rag/ask", json={"question": "   "})
+    assert r.status_code == 422
+
+
+def test_rag_ask_empty_kb_is_409():
+    client = client_with()
+    r = client.post("/v1/rag/ask", json={"question": "What is remote sensing?"})
+    assert r.status_code == 409
+    assert "Knowledge base is empty" in r.json()["detail"]
+
+
+def test_rag_ask_with_provider():
+    from app.ingestion.chunker import chunk_text
+    from app.providers.fake import FakeProvider
+    from app.rag.knowledge_base import KnowledgeBase
+
+    client = client_with()
+    kb = KnowledgeBase()
+    chunks = chunk_text(
+        text="Remote sensing gathers info about Earth from distance. " * 20,
+        source="doc.pdf",
+        chunk_size=30,
+        overlap=5,
+    )
+    kb.vector_store.add_chunks(chunks)
+    client.app.state.rag_knowledge_base = kb
+    client.app.state.rag_provider = FakeProvider(["Remote sensing uses satellites."])
+
+    r = client.post("/v1/rag/ask", json={"question": "What is remote sensing?"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["decision"] == "ANSWER"
+    assert "answerability_score" in body
+    assert "signals" in body

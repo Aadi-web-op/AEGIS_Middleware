@@ -1,10 +1,10 @@
-# Providers are tried in order. A provider whose API-key variable is not set is skipped.
-# Model names change often, so look up current ones in each provider's docs
-# (for Ollama, run `ollama list` to see what you have pulled).
+
+# Providers are tried in order.
+# Set GROQ_API_KEY in PowerShell before starting the backend.
 chain:
   - name: groq
     base_url: https://api.groq.com/openai/v1
-    model: REPLACE_WITH_GROQ_MODEL
+    model: openai/gpt-oss-120b
     api_key_env: GROQ_API_KEY
     timeout_s: 20
 
@@ -12,4 +12,3 @@ chain:
     base_url: http://localhost:11434/v1
     model: REPLACE_WITH_LOCAL_MODEL
     timeout_s: 120
-    
