@@ -88,7 +88,11 @@ Aegis does not merely output a numerical score; it visualizes the entire evidenc
 ### Prerequisites
 * Python 3.10+
 * Docker & Docker Compose (for Neo4j)
-* Node.js 18+ (for frontend demonstration)
+* Node.js **20.19+ or 22.12+** (for the frontend demonstration). The Vite 8 /
+  rolldown toolchain declares this in `engines`; on an older Node, npm
+  silently skips rolldown's platform binding and `npm test`, `npm run build`
+  and `npm run lint` all fail with "Cannot find native binding". Node 18 and
+  Node 22.11 are both too old.
 
 ### 1. Start Neo4j Database
 ```bash
