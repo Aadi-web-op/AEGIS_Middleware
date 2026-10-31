@@ -187,8 +187,19 @@ def main() -> None:
             password=args.password,
             database=args.database,
         )
+        sink._driver.verify_connectivity()
     except Exception as exc:
-        logger.error("Failed to connect to Neo4j at %s: %s", args.uri, exc)
+        err_msg = str(exc)
+        if "Unauthorized" in err_msg or "AuthError" in type(exc).__name__:
+            logger.error(
+                "Neo4j authentication failed: Incorrect password or username for %s (user: '%s').\n"
+                "  - If using Neo4j AuraDB (cloud), make sure to use the instance password from the downloaded credentials .txt file (not your account login password).\n"
+                "  - Supply password via: --password <your_password> or $env:NEO4J_PASSWORD=\"<your_password>\"",
+                args.uri,
+                args.user,
+            )
+        else:
+            logger.error("Failed to connect to Neo4j at %s: %s", args.uri, exc)
         sys.exit(1)
 
     if args.apply_schema:
