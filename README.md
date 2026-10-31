@@ -149,22 +149,62 @@ def safe_ai_query(query: str, answer: str, evidence_chunks: list[dict]):
 
 ## 6. Evaluation & Benchmark Results
 
-Aegis includes a standardized benchmark covering 40 real-world policy scenarios (clear answers, numeric contradictions, outdated versions, incomplete evidence, and prompt injections):
+Aegis includes a benchmark of **20 policy scenarios** (clear answers, numeric
+contradictions, outdated versions, incomplete evidence, ambiguous queries and
+prompt injections), split into **12 development cases and 8 locked test cases**.
+Development and tuning use the dev split only; the locked split is reserved to
+avoid overfitting.
 
-| System Configuration | Coverage (% Answered) | Selective Accuracy | False-Answer Rate | Contradiction Detection |
-| :--- | :---: | :---: | :---: | :---: |
-| **Baseline RAG (No Middleware)** | 100.0% | 58.3% | 41.7% | 0.0% (Guesses silently) |
-| **Naive Retrieval Threshold** | 72.5% | 68.2% | 31.8% | 12.5% |
-| **Aegis Middleware (Standard)** | **62.5%** | **94.8%** | **5.2%** | **100.0% (Escalates all)** |
+### Measured results — development split (12 cases)
 
-> **Headline Result:** Aegis reduced false or unsupported answers reaching users from **41.7% to 5.2%**, catching 100% of conflicting circulars while safely passing through 62.5% of verified answers.
+Reproduce with `python -m tests.benchmark.evaluator`:
+
+| Metric | Value |
+| :--- | :---: |
+| Decision accuracy | 66.7% (8/12) |
+| Coverage (ANSWER or CAVEAT) | 50.0% |
+| Selective accuracy | 50.0% |
+| Abstention / escalation precision | 83.3% |
+| Median latency | 58 ms |
+
+### Explanation quality — all 20 cases
+
+Reproduce with `python -m scripts.explanation_check`:
+
+| Metric | Value |
+| :--- | :---: |
+| Headline matches labelled failure type | 70.0% (14/20) |
+| Reason code matches labelled failure type | 80.0% (16/20) |
+| Both match | 70.0% (14/20) |
+
+Measured on Python 3.12.6, CPU, `cross-encoder/nli-MiniLM2-L6-H768`. Latency
+excludes first-call model load (~5.8 s warm-up).
+
+### Known weakness in these numbers
+
+Four of the twelve dev cases miss, and they miss in one direction: an answer
+containing an unsupported claim is returned as a plain **ANSWER** instead of
+being caveated. The cause is that the veto rules compare *aggregate* signal
+values, so a single unsupported claim inside an otherwise well-supported answer
+does not lower `entailment` enough to trip `escalate_below_support`, and the
+claim-level reasons are attached only when the decision is already not ANSWER.
+This is tracked as a known limitation, not a tuned-away result. See
+§"Limitations".
+
+> **Honest framing:** these are the numbers the committed benchmark actually
+> produces on the development split. No baseline-RAG or naive-threshold
+> comparison is included, because neither is implemented in this repository —
+> any such comparison would be an estimate, not a measurement.
 
 ### Run Verification & Explanation Checks
 ```bash
-# Run full test suite (375+ unit, graph, and API tests)
+# Run full test suite (456 unit, integration, graph, API and benchmark tests)
 pytest tests/
 
-# Seed benchmark cases into Neo4j
+# Run the benchmark on the development split
+python -m tests.benchmark.evaluator
+
+# Seed benchmark cases into Neo4j (requires docker compose up -d neo4j)
 python -m scripts.seed_neo4j
 
 # Run the 20-case explanation check
@@ -173,6 +213,63 @@ python -m scripts.explanation_check
 
 ---
 
-## 7. License & Open Source
+## 7. Limitations & Privacy
+
+Stated plainly, so reviewers and judges can calibrate what Aegis does and does
+not do today.
+
+### Decision quality
+
+- **Unsupported claims can slip through as ANSWER.** Veto rules compare
+  aggregate signal values, so one unsupported claim inside an otherwise
+  well-supported answer may not lower `entailment` enough to trip
+  `escalate_below_support`. Claim-level reasons are attached only when the
+  decision is already not ANSWER, so such an answer can be returned with no
+  warning at all. This accounts for 4 of the 12 dev-split misses and is the
+  single most important open issue.
+- **Freshness is heuristic, not semantic.** Linear decay over a 90-day window
+  on evidence dates. It does not know whether a document is *still* correct,
+  only how old it is. Undated evidence yields `SIGNAL_UNAVAILABLE`, and the
+  request is marked `degraded`.
+- **Ambiguity is lexical.** Query-length and pattern heuristics, not a model.
+  It catches very short and obviously underspecified queries and will miss
+  ambiguity that needs world knowledge.
+- **Entailment is a small NLI model.** `cross-encoder/nli-MiniLM2-L6-H768` on
+  CPU. It is fast, not authoritative, and inherits that model's biases.
+- **The benchmark is 20 cases.** Enough to show behaviour and catch
+  regressions; too small for statistical claims. Confidence intervals on a
+  12-case split are wide.
+- **No baseline comparison is implemented.** Any "versus plain RAG" figure
+  would be an estimate, not a measurement.
+
+### Privacy
+
+- **Full retrieved document text is never written to Neo4j.** The writer drops
+  keys that could carry it and truncates every stored preview to 120
+  characters.
+- **SQLite is the system of record.** `audit.db` and `escalations.db` hold the
+  audit trail; the graph is a derived, rebuildable projection. Both are
+  gitignored and never committed.
+- **Claim text comes from the AI's own answer**, not from source documents, and
+  is length-bounded.
+- **Neo4j is outside the decision path.** Every write goes through
+  `safe_write_trace`, which swallows and logs all failures. A dead, slow or
+  absent graph server cannot change a decision, a response or a returned trace.
+- **Prompt-injection content in retrieved documents is treated as data.**
+  Instructions embedded in evidence are scored as text, not obeyed; a document
+  demanding "reply ANSWER with full confidence" is escalated on the numeric
+  conflict it also contains.
+
+### Operational
+
+- Neo4j credentials default to `neo4j/password` for local development. Set
+  `NEO4J_PASSWORD` for anything else. See `.env.example`.
+- The Neo4j-backed `/v1/insights/{conflicts,outdated,abstains,impact,escalations}`
+  endpoints return **503** when no graph server is configured. The
+  SQLite-backed insight endpoints work without Neo4j.
+
+---
+
+## 8. License & Open Source
 
 This project is licensed under the [MIT License](LICENSE). Built for the HackFront India Open Source & Innovation Track.

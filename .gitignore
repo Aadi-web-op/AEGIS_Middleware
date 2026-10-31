@@ -16,6 +16,8 @@ venv/
 env/
 .env
 .env.*
+# ...but the committed template must not be ignored.
+!.env.example
 
 # Testing / coverage
 .pytest_cache/
