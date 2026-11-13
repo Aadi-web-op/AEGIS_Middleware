@@ -6,7 +6,7 @@
  * visual styles (green=support, red=contradiction, dashed=supersedes).
  * No heavy external library required.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { safePreview } from "./graphUtils.js";
 
 // ── Visual configuration ───────────────────────────────────────────────────
@@ -333,8 +333,11 @@ export default function DecisionGraph({ graphData }) {
   const isDragging = useRef(false);
   const dragStart = useRef({ x: 0, y: 0, tx: 0, ty: 0 });
 
-  const { nodes, edges } = graphData ?? { nodes: [], edges: [] };
-  const positions = computeLayout(nodes, edges);
+  // Memoised so fitToView (and its effect) only re-run when the graph changes;
+  // recomputing these every render made the fit effect loop forever.
+  const nodes = useMemo(() => graphData?.nodes ?? [], [graphData]);
+  const edges = useMemo(() => graphData?.edges ?? [], [graphData]);
+  const positions = useMemo(() => computeLayout(nodes, edges), [nodes, edges]);
 
   // Fit-to-view
   const fitToView = useCallback(() => {
