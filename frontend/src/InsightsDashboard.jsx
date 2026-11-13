@@ -13,7 +13,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 
-const API = "http://127.0.0.1:8000";
+const API = import.meta.env.VITE_AEGIS_API ?? "http://127.0.0.1:8000";
 
 function useInsight(url) {
   const [data, setData] = useState(null);
@@ -47,13 +47,14 @@ function useInsight(url) {
 
 // ── Reusable section wrapper ────────────────────────────────────────────────
 
-function InsightSection({ title, icon, loading, error, retry, children, empty }) {
+function InsightSection({ title, icon, desc, loading, error, retry, children, empty }) {
   return (
     <div className="insight-section">
       <h3>
-        <span aria-hidden="true">{icon} </span>
+        <span className="insight-icon" aria-hidden="true">{icon}</span>
         {title}
       </h3>
+      {desc && <p className="insight-desc">{desc}</p>}
       {loading && <p className="muted">Loading…</p>}
       {!loading && error && (
         <div className="insight-error">
@@ -85,7 +86,7 @@ function ConflictingPairs({ onSelectRequestId }) {
   return (
     <InsightSection
       title="High-contradiction requests"
-      icon="⚡"
+      icon="!=" desc="Requests where the retrieved sources disagreed with each other or with the answer."
       loading={loading}
       error={error}
       retry={retry}
@@ -139,7 +140,7 @@ function StaleRetrievals({ onSelectRequestId }) {
   return (
     <InsightSection
       title="Stale evidence retrievals"
-      icon="🕰"
+      icon="⏲" desc="Requests answered from evidence that scored low on freshness."
       loading={loading}
       error={error}
       retry={retry}
@@ -190,7 +191,7 @@ function AbstainTopics() {
   return (
     <InsightSection
       title="Topics leading to ABSTAIN"
-      icon="🚫"
+      icon="∅" desc="Questions the documents could not answer — your documentation gaps."
       loading={loading}
       error={error}
       retry={retry}
@@ -209,8 +210,8 @@ function AbstainTopics() {
             <tr key={r.request_id}>
               <td className="truncate" title={r.query}>{r.query || "—"}</td>
               <td>
-                {(r.reason_codes ?? []).map((c) => (
-                  <span key={c} className="reason-chip">{c}</span>
+                {(r.reason_codes ?? []).map((c, i) => (
+                  <span key={`${c}-${i}`} className="reason-chip">{c}</span>
                 ))}
               </td>
               <td className="ts">{r.timestamp ? r.timestamp.slice(0, 19).replace("T", " ") : "—"}</td>
@@ -232,7 +233,7 @@ function PastEscalations({ onSelectRequestId }) {
   return (
     <InsightSection
       title="Past escalation decisions"
-      icon="🔺"
+      icon="↑" desc="Recent decisions routed to a human reviewer."
       loading={loading}
       error={error}
       retry={retry}
@@ -258,8 +259,8 @@ function PastEscalations({ onSelectRequestId }) {
                   : "—"}
               </td>
               <td>
-                {(r.reason_codes ?? []).map((c) => (
-                  <span key={c} className="reason-chip">{c}</span>
+                {(r.reason_codes ?? []).map((c, i) => (
+                  <span key={`${c}-${i}`} className="reason-chip">{c}</span>
                 ))}
               </td>
               <td className="ts">{r.timestamp ? r.timestamp.slice(0, 19).replace("T", " ") : "—"}</td>
@@ -289,7 +290,7 @@ function EscalationClusters({ onSelectRequestId }) {
   return (
     <InsightSection
       title="Escalations by root cause"
-      icon="🗂"
+      icon="≡" desc="Escalations grouped by shared root cause, so one fix clears many."
       loading={loading}
       error={error}
       retry={retry}
@@ -329,10 +330,6 @@ export default function InsightsDashboard({ onNavigateToGraph }) {
     <div className="insights-dashboard">
       <div className="insights-header">
         <h2>Insights dashboard</h2>
-        <p className="muted">
-          Cross-decision analytics from the audit log. Data is real — no mock
-          statistics. Click "Graph →" to open a decision graph.
-        </p>
       </div>
       <div className="insights-grid">
         <ConflictingPairs onSelectRequestId={onNavigateToGraph} />

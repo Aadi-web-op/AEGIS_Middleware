@@ -7,7 +7,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 
-const API = "http://127.0.0.1:8000";
+const API = import.meta.env.VITE_AEGIS_API ?? "http://127.0.0.1:8000";
 const STATUSES = ["pending", "in_review", "resolved", "dismissed"];
 
 const STATUS_COLORS = {
@@ -23,6 +23,7 @@ export default function EscalationQueue({ onOpenGraph }) {
   const [error, setError] = useState(null);
   const [filterStatus, setFilterStatus] = useState("");
   const [updating, setUpdating] = useState(null);
+  const [actionError, setActionError] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -45,6 +46,7 @@ export default function EscalationQueue({ onOpenGraph }) {
 
   async function updateStatus(escalationId, newStatus) {
     setUpdating(escalationId);
+    setActionError(null);
     try {
       const r = await fetch(`${API}/v1/escalations/${escalationId}`, {
         method: "PATCH",
@@ -57,7 +59,7 @@ export default function EscalationQueue({ onOpenGraph }) {
       }
       await load();
     } catch (e) {
-      alert(`Failed to update: ${e.message}`);
+      setActionError(`Failed to update ${escalationId}: ${e.message}`);
     } finally {
       setUpdating(null);
     }
@@ -66,25 +68,27 @@ export default function EscalationQueue({ onOpenGraph }) {
   return (
     <div className="escalation-queue">
       <div className="eq-header">
-        <h2>Escalation queue</h2>
+        <h2>
+          {loading ? "Loading…" : `${items.length} item${items.length !== 1 ? "s" : ""}`}
+        </h2>
         <div className="eq-controls">
           <select
             value={filterStatus}
             onChange={(e) => setFilterStatus(e.target.value)}
             aria-label="Filter by status"
-            style={{ width: "auto" }}
           >
             <option value="">All statuses</option>
             {STATUSES.map((s) => (
               <option key={s} value={s}>{s.replace("_", " ")}</option>
             ))}
           </select>
-          <button onClick={load} className="retry-btn" style={{ width: "auto" }}>
+          <button onClick={load} className="retry-btn">
             Refresh
           </button>
         </div>
       </div>
 
+      {actionError && <p className="error" role="alert">{actionError}</p>}
       {loading && <p className="muted">Loading escalations…</p>}
       {!loading && error && (
         <div className="insight-error">
@@ -154,15 +158,13 @@ export default function EscalationQueue({ onOpenGraph }) {
                     <button
                       disabled={updating === item.escalation_id}
                       onClick={() => updateStatus(item.escalation_id, "in_review")}
-                      className="dg-btn"
                     >
                       Mark in review
                     </button>
                     <button
                       disabled={updating === item.escalation_id}
                       onClick={() => updateStatus(item.escalation_id, "dismissed")}
-                      className="dg-btn"
-                      style={{ background: "#374151" }}
+                      className="btn-secondary"
                     >
                       Dismiss
                     </button>
@@ -173,15 +175,13 @@ export default function EscalationQueue({ onOpenGraph }) {
                     <button
                       disabled={updating === item.escalation_id}
                       onClick={() => updateStatus(item.escalation_id, "resolved")}
-                      className="dg-btn"
                     >
                       Resolve
                     </button>
                     <button
                       disabled={updating === item.escalation_id}
                       onClick={() => updateStatus(item.escalation_id, "dismissed")}
-                      className="dg-btn"
-                      style={{ background: "#374151" }}
+                      className="btn-secondary"
                     >
                       Dismiss
                     </button>
