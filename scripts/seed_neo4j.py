@@ -1,9 +1,13 @@
-"""Seeding script for Neo4j: runs benchmark dev set through Aegis into Neo4j.
+"""Seeding script for Neo4j: runs benchmark & synthetic HR requests through Aegis into Neo4j.
 
-Per "Aegis Decision Graph (Neo4j Add-on): Team Brief" (Oct 22, 2026):
-"The insights must come from real runs, not hand-made data. Shatakshi's seeding
-script runs the benchmark dev set through Aegis and writes every trace to Neo4j,
-so the demo panel shows what our own system produced."
+Per "AEGIS Finale Plan: Decisions & Task Split" (Nov 17, 2026):
+"Seed script: 30 to 50 varied requests through /v1/evaluate; re-run once hash identity is merged (2h)
+Seed data: 30 to 50 synthetic requests over the existing HR documents, so the graph
+and Insights have something to show."
+
+Supports two execution modes:
+1. Direct evaluation (default / offline): Evaluates via local Evaluator pipeline and writes traces.
+2. HTTP evaluation: Posts requests to a live /v1/evaluate server (`--api-url http://localhost:8000`).
 
 Each case is evaluated exactly once by the real `Evaluator`, and the trace
 written is the one the evaluator itself produced (`response.trace`) -- the
@@ -17,6 +21,7 @@ the audit log (`scripts/rebuild_graph.py`). Pass `--no-audit` to skip that.
 
 Usage:
     python -m scripts.seed_neo4j [--uri bolt://localhost:7687] [--user neo4j] [--password password]
+    python -m scripts.seed_neo4j --api-url http://127.0.0.1:8000
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ from app.evidence.registry import default_signals
 from app.graph.neo4j_sink import Neo4jGraphSink
 from app.graph.schema import apply_schema
 from app.graph.sink import safe_write_trace
+from data.synthetic_cases import get_all_seed_cases
 from tests.benchmark.test_cases import BENCHMARK_CASES, DEV_CASES
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -104,6 +110,61 @@ def build_trace_for_case(
     return response.trace
 
 
+def seed_via_http(
+    api_url: str,
+    cases: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Seed cases by POSTing to a running /v1/evaluate server endpoint."""
+    import httpx
+
+    endpoint = f"{api_url.rstrip('/')}/v1/evaluate"
+    logger.info("Seeding %d cases through live endpoint: %s", len(cases), endpoint)
+
+    success_count = 0
+    failure_count = 0
+    seeded_ids: List[str] = []
+
+    with httpx.Client(timeout=30.0) as client:
+        for idx, case in enumerate(cases):
+            name = case["name"]
+            req_data = case["request"].model_dump()
+            try:
+                resp = client.post(endpoint, json=req_data)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    success_count += 1
+                    req_id = data.get("request_id", f"bench-{name}")
+                    seeded_ids.append(req_id)
+                    logger.info(
+                        "[%d/%d] HTTP Seeded %s -> %s (score: %s)",
+                        idx + 1,
+                        len(cases),
+                        name,
+                        data.get("decision"),
+                        data.get("answerability_score"),
+                    )
+                else:
+                    failure_count += 1
+                    logger.warning(
+                        "[%d/%d] HTTP Failed %s: status %d - %s",
+                        idx + 1,
+                        len(cases),
+                        name,
+                        resp.status_code,
+                        resp.text[:120],
+                    )
+            except Exception as exc:
+                failure_count += 1
+                logger.exception("[%d/%d] HTTP Error on %s: %s", idx + 1, len(cases), name, exc)
+
+    return {
+        "total_cases": len(cases),
+        "successful_writes": success_count,
+        "failed_writes": failure_count,
+        "seeded_request_ids": seeded_ids,
+    }
+
+
 def seed_cases(
     sink: Any,
     cases: Optional[Sequence[Dict[str, Any]]] = None,
@@ -114,7 +175,7 @@ def seed_cases(
 
     Args:
         sink: A GraphSink (e.g. Neo4jGraphSink) or driver-backed sink.
-        cases: List of cases to seed (defaults to DEV_CASES).
+        cases: List of cases to seed (defaults to combined dev + synthetic cases).
         evaluator: Evaluator instance to use.
         audit_logger: Optional `AuditLogger`; when given, each seeded
             decision is also recorded there under the same request id.
@@ -123,7 +184,7 @@ def seed_cases(
         Summary dict of total cases, successes, failures, and request_ids.
     """
     if cases is None:
-        cases = DEV_CASES
+        cases = get_all_seed_cases()
 
     if evaluator is None:
         evaluator = Evaluator(default_signals())
@@ -133,7 +194,7 @@ def seed_cases(
     audit_count = 0
     seeded_ids: List[str] = []
 
-    logger.info("Starting seeding of %d benchmark cases into Neo4j...", len(cases))
+    logger.info("Starting direct seeding of %d cases into Neo4j...", len(cases))
 
     for idx, case in enumerate(cases):
         name = case["name"]
@@ -187,7 +248,7 @@ def seed_cases(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Seed Aegis benchmark dev set into Neo4j.")
+    parser = argparse.ArgumentParser(description="Seed Aegis Decision Graph into Neo4j.")
     parser.add_argument(
         "--uri",
         default=os.environ.get("NEO4J_URI", "bolt://localhost:7687"),
@@ -209,9 +270,14 @@ def main() -> None:
         help="Optional Neo4j database name",
     )
     parser.add_argument(
-        "--all-cases",
+        "--dev-only",
         action="store_true",
-        help="Seed all benchmark cases instead of only DEV_CASES",
+        help="Seed only canonical 12 dev cases instead of full 47 cases",
+    )
+    parser.add_argument(
+        "--all-benchmark",
+        action="store_true",
+        help="Seed all 20 benchmark cases",
     )
     parser.add_argument(
         "--apply-schema",
@@ -229,10 +295,28 @@ def main() -> None:
         default=None,
         help="Audit database path (default: AEGIS_AUDIT_DB_PATH or ./audit.db)",
     )
+    parser.add_argument(
+        "--api-url",
+        default=None,
+        help="Optional URL of running Aegis server (e.g. http://127.0.0.1:8000) to seed via /v1/evaluate",
+    )
     args = parser.parse_args()
 
-    cases = BENCHMARK_CASES if args.all_cases else DEV_CASES
+    if args.dev_only:
+        cases = DEV_CASES
+    elif args.all_benchmark:
+        cases = BENCHMARK_CASES
+    else:
+        cases = get_all_seed_cases()
 
+    # Mode 1: HTTP API Seeding
+    if args.api_url:
+        summary = seed_via_http(args.api_url, cases)
+        if summary["failed_writes"] > 0:
+            sys.exit(1)
+        return
+
+    # Mode 2: Direct Neo4j Bolt Seeding
     try:
         sink = Neo4jGraphSink.from_uri(
             uri=args.uri,
@@ -245,9 +329,7 @@ def main() -> None:
         err_msg = str(exc)
         if "Unauthorized" in err_msg or "AuthError" in type(exc).__name__:
             logger.error(
-                "Neo4j authentication failed: Incorrect password or username for %s (user: '%s').\n"
-                "  - If using Neo4j AuraDB (cloud), make sure to use the instance password from the downloaded credentials .txt file (not your account login password).\n"
-                "  - Supply password via: --password <your_password> or $env:NEO4J_PASSWORD=\"<your_password>\"",
+                "Neo4j authentication failed: Incorrect password or username for %s (user: '%s').",
                 args.uri,
                 args.user,
             )
@@ -260,7 +342,7 @@ def main() -> None:
         try:
             apply_schema(sink.driver, database=args.database)
         except Exception as exc:
-            logger.warning("Could not apply schema (may already exist or insufficient permissions): %s", exc)
+            logger.warning("Could not apply schema: %s", exc)
 
     audit_logger = None
     if not args.no_audit:

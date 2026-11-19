@@ -1,6 +1,7 @@
-"""Unit tests for the Neo4j seeding script.
+"""Unit tests for the Neo4j seeding script and synthetic case dataset.
 
-Tests running benchmark cases into the sink using fake drivers without requiring a running database.
+Tests running benchmark and synthetic HR cases into the sink using fake drivers
+without requiring a running database.
 """
 
 from __future__ import annotations
@@ -9,7 +10,8 @@ import pytest
 from app.core.evaluator import Evaluator
 from app.evidence.stubs import FixedSignal
 from app.graph.neo4j_sink import Neo4jGraphSink
-from scripts.seed_neo4j import build_trace_for_case, seed_cases
+from data.synthetic_cases import SYNTHETIC_HR_CASES, get_all_seed_cases
+from scripts.seed_neo4j import build_trace_for_case, seed_cases, seed_via_http
 from tests.benchmark.test_cases import DEV_CASES
 from tests.graph.fake_driver import FakeDriver
 
@@ -25,6 +27,27 @@ def _mock_evaluator() -> Evaluator:
         FixedSignal("ambiguity", 0.05),
     ]
     return Evaluator(signals)
+
+
+def test_synthetic_hr_cases_count_and_coverage():
+    """Verify synthetic dataset contains between 30 and 50 diverse cases."""
+    assert len(SYNTHETIC_HR_CASES) >= 30
+    all_cases = get_all_seed_cases()
+    assert 30 <= len(all_cases) <= 60
+
+    # Ensure all 4 decisions are represented
+    decisions = {c["expected_decision"] for c in SYNTHETIC_HR_CASES}
+    assert {"ANSWER", "CAVEAT", "ESCALATE", "ABSTAIN"}.issubset(decisions)
+
+    # Ensure documents cover multiple corporate policies
+    sources = set()
+    for c in SYNTHETIC_HR_CASES:
+        for ev in c["request"].evidence:
+            if hasattr(ev, "source") and ev.source:
+                sources.add(ev.source)
+    assert len(sources) >= 5
+    assert "hr-policy.pdf" in sources
+    assert "staff-handbook.pdf" in sources
 
 
 def test_build_trace_for_benchmark_case():
@@ -55,6 +78,21 @@ def test_seed_cases_with_fake_sink():
     # Check that driver executed MERGE statements
     assert len(driver.calls) > 0
     assert any(c.is_node_merge for c in driver.calls)
+
+
+def test_seed_synthetic_cases_with_fake_sink():
+    """Verify seed_cases runs synthetic cases into the fake sink."""
+    driver = FakeDriver()
+    sink = Neo4jGraphSink(driver)
+    evaluator = _mock_evaluator()
+
+    sample_cases = SYNTHETIC_HR_CASES[:5]
+    summary = seed_cases(sink=sink, cases=sample_cases, evaluator=evaluator)
+
+    assert summary["total_cases"] == 5
+    assert summary["successful_writes"] == 5
+    assert summary["failed_writes"] == 0
+    assert len(summary["seeded_request_ids"]) == 5
 
 
 def test_seed_cases_idempotent():

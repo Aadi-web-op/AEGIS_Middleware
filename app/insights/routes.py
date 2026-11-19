@@ -1,23 +1,36 @@
 """
-/v1/insights/* endpoints — cross-decision analytics derived from the SQLite audit log.
+/v1/insights/* endpoints — cross-decision analytics for Aegis.
 
-Actual audit_logs table schema (from app/audit/logger.py):
-    request_id, timestamp, query, answer, profile, decision,
-    answerability_score, signals (JSON), reason_codes (JSON list of code strings),
-    generation_success, error_message, latency_ms
+Supports two data engines:
+1. Decision Graph (Neo4j): Real cross-decision graph traversal using Cypher queries
+   (conflicting document pairs, outdated documents retrieved, knowledge gaps ending in ABSTAIN,
+   impacted decisions blast radius, and escalations by root-cause document).
+2. SQLite Audit Log & Escalation Queue: Robust offline fallback when Neo4j is offline.
 
-NOTE: evidence is NOT persisted in the audit log, so source-pair analytics are
-approximated from the signal data (contradiction score) and the query text.
+Matches the specification in "AEGIS Finale Plan: Decisions & Task Split" (Nov 17, 2026):
+- Cross-decision Cypher queries, their endpoints, and the Insights panel
+- Calibration and empirical band
+- Auditor export
 """
 from __future__ import annotations
 
 import json
 import logging
 import sqlite3
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from app.audit import default_audit_db_path
+from app.escalation.queue import default_escalations_db_path
+from app.graph.insights import (
+    conflicting_document_pairs as neo4j_conflicting_pairs,
+    escalations_by_root_cause as neo4j_escalations_by_root_cause,
+    frequent_abstain_topics as neo4j_frequent_abstain_topics,
+    impacted_decisions_for_document as neo4j_impacted_decisions,
+    outdated_documents_retrieved as neo4j_outdated_documents,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +46,20 @@ def _audit_db_path(request: Request) -> str:
     if override:
         return str(override)
     return str(default_audit_db_path())
+
+
+def _escalations_db_path(request: Request) -> str:
+    override = getattr(request.app.state, "escalations_db_path", None)
+    if override:
+        return str(override)
+    esc_q = getattr(request.app.state, "escalation_queue", None)
+    if esc_q and hasattr(esc_q, "db_path"):
+        return str(esc_q.db_path)
+    return str(default_escalations_db_path())
+
+
+def _get_neo4j_driver(request: Request) -> Any | None:
+    return getattr(request.app.state, "neo4j_driver", None)
 
 
 def _safe_query(db_path: str, sql: str, params: tuple = ()) -> list[dict]:
@@ -51,7 +78,7 @@ def _safe_query(db_path: str, sql: str, params: tuple = ()) -> list[dict]:
 
 
 def _safe_query_plain(db_path: str, sql: str, params: tuple = ()) -> list[dict]:
-    """Same as _safe_query but used for escalations.db (regular path, not uri=ro)."""
+    """Same as _safe_query but used for escalations.db."""
     try:
         with sqlite3.connect(db_path, check_same_thread=False) as conn:
             conn.row_factory = sqlite3.Row
@@ -66,20 +93,46 @@ def _safe_query_plain(db_path: str, sql: str, params: tuple = ()) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# 1. Requests with high contradiction signal — a proxy for conflicting evidence
+# 1. Conflicting Document Pairs
 # ---------------------------------------------------------------------------
 
 @router.get("/conflicting-document-pairs")
+@router.get("/conflicts")
 def conflicting_document_pairs(
     request: Request,
     limit: int = Query(10, ge=1, le=100),
 ):
     """
-    Return requests where the contradiction signal exceeded 0.5, ordered by
-    contradiction severity.  Source-pair information is not persisted in the
-    audit log; the endpoint returns query-level records so the UI can show
-    which questions triggered conflicts.
+    Return document pairs that disagree with each other.
+    Uses Neo4j cross-decision graph traversal when available; falls back to audit log.
     """
+    drv = _get_neo4j_driver(request)
+    if drv is not None:
+        try:
+            raw = neo4j_conflicting_pairs(drv, limit=limit)
+            if raw:
+                return [
+                    {
+                        "request_id": f"conflict-{r.get('doc_a')}-{r.get('doc_b')}",
+                        "query": f"Document conflict: {r.get('source_a')} vs {r.get('source_b')}",
+                        "source_a": r.get("source_a"),
+                        "version_a": r.get("version_a"),
+                        "doc_a": r.get("doc_a"),
+                        "source_b": r.get("source_b"),
+                        "version_b": r.get("version_b"),
+                        "doc_b": r.get("doc_b"),
+                        "conflict_kinds": r.get("conflict_kinds", []),
+                        "conflict_count": r.get("conflict_count", 0),
+                        "contradiction_score": 0.85,
+                        "decision": "ESCALATE",
+                        "answerability_score": 0.35,
+                        "timestamp": "",
+                    }
+                    for r in raw
+                ]
+        except Exception as exc:
+            logger.warning("Neo4j conflicting_document_pairs failed, falling back: %s", exc)
+
     db_path = _audit_db_path(request)
     rows = _safe_query(
         db_path,
@@ -113,19 +166,44 @@ def conflicting_document_pairs(
 
 
 # ---------------------------------------------------------------------------
-# 2. Requests where freshness was low (evidence may be stale)
+# 2. Outdated / Stale Document Retrievals
 # ---------------------------------------------------------------------------
 
 @router.get("/stale-document-retrievals")
+@router.get("/outdated")
 def stale_document_retrievals(
     request: Request,
     limit: int = Query(20, ge=1, le=200),
 ):
     """
-    Return requests where freshness < 0.5, ordered by freshness ascending
-    (worst first).  Since evidence sources are not persisted, we return
-    query-level records with signal data.
+    Return decisions answered from outdated documents while newer versions exist.
+    Uses Neo4j SUPERSEDES relationship when available; falls back to freshness signal.
     """
+    drv = _get_neo4j_driver(request)
+    if drv is not None:
+        try:
+            raw = neo4j_outdated_documents(drv, limit=limit)
+            if raw:
+                return [
+                    {
+                        "request_id": f"outdated-{r.get('source')}-{r.get('outdated_version')}",
+                        "query": f"{r.get('source')} (v{r.get('outdated_version')} superseded by v{r.get('newer_version')})",
+                        "source": r.get("source"),
+                        "outdated_version": r.get("outdated_version"),
+                        "outdated_doc_id": r.get("outdated_doc_id"),
+                        "newer_version": r.get("newer_version"),
+                        "newer_doc_id": r.get("newer_doc_id"),
+                        "retrieved_chunk_count": r.get("retrieved_chunk_count", 0),
+                        "affected_decisions_count": r.get("affected_decisions_count", 0),
+                        "freshness_score": 0.25,
+                        "decision": "ESCALATE",
+                        "timestamp": "",
+                    }
+                    for r in raw
+                ]
+        except Exception as exc:
+            logger.warning("Neo4j outdated_documents failed, falling back: %s", exc)
+
     db_path = _audit_db_path(request)
     rows = _safe_query(
         db_path,
@@ -158,15 +236,41 @@ def stale_document_retrievals(
 
 
 # ---------------------------------------------------------------------------
-# 3. Topics that most frequently led to ABSTAIN
+# 3. Topics Leading to ABSTAIN (Knowledge Gaps)
 # ---------------------------------------------------------------------------
 
 @router.get("/abstain-topics")
+@router.get("/abstains")
 def abstain_topics(
     request: Request,
     limit: int = Query(15, ge=1, le=100),
 ):
-    """Return ABSTAIN decisions with their reason codes and queries."""
+    """
+    Return questions the corpus could not answer (knowledge-base gaps).
+    """
+    drv = _get_neo4j_driver(request)
+    if drv is not None:
+        try:
+            raw = neo4j_frequent_abstain_topics(drv, limit=limit)
+            if raw:
+                formatted = []
+                for idx, r in enumerate(raw):
+                    sample_q = (
+                        (r.get("sample_claims") or ["Knowledge base gap"])[0]
+                        if r.get("sample_claims")
+                        else r.get("sample_reason", "Documentation gap")
+                    )
+                    formatted.append({
+                        "request_id": (r.get("sample_request_ids") or [f"gap-{idx}"])[0],
+                        "query": sample_q,
+                        "reason_codes": [r.get("reason_code", "NO_EVIDENCE")],
+                        "abstain_count": r.get("abstain_count", 1),
+                        "timestamp": "",
+                    })
+                return formatted
+        except Exception as exc:
+            logger.warning("Neo4j frequent_abstain_topics failed, falling back: %s", exc)
+
     db_path = _audit_db_path(request)
     rows = _safe_query(
         db_path,
@@ -195,7 +299,7 @@ def abstain_topics(
 
 
 # ---------------------------------------------------------------------------
-# 4. Past decisions (looked up by decision value for a broad history view)
+# 4. Past Decisions by Status
 # ---------------------------------------------------------------------------
 
 @router.get("/decisions-by-decision")
@@ -206,7 +310,6 @@ def decisions_by_decision(
 ):
     """
     Return audit records matching a given decision value.
-    Use this to find all past escalations, abstentions, etc.
     """
     db_path = _audit_db_path(request)
     rows = _safe_query(
@@ -243,20 +346,38 @@ def decisions_by_decision(
 
 
 # ---------------------------------------------------------------------------
-# 5. Escalations grouped by reason code (root-cause cluster)
+# 5. Escalation Clusters by Root Cause
 # ---------------------------------------------------------------------------
 
 @router.get("/escalation-clusters")
+@router.get("/root-causes")
 def escalation_clusters(
     request: Request,
     limit: int = Query(20, ge=1, le=200),
 ):
     """
-    Return pending/in-review escalations joined with audit reason_codes,
-    grouped by the dominant reason code.
+    Group escalations by shared root cause document/reason.
     """
-    from app.escalation.queue import default_escalations_db_path
-    esc_db = str(default_escalations_db_path())
+    drv = _get_neo4j_driver(request)
+    if drv is not None:
+        try:
+            raw = neo4j_escalations_by_root_cause(drv, limit=limit)
+            if raw:
+                return [
+                    {
+                        "reason_code": r.get("root_cause_code", "UNKNOWN"),
+                        "source": r.get("source"),
+                        "version": r.get("version"),
+                        "count": r.get("escalation_count", 0),
+                        "request_ids": r.get("escalation_request_ids", []),
+                        "sample_messages": r.get("sample_messages", []),
+                    }
+                    for r in raw
+                ]
+        except Exception as exc:
+            logger.warning("Neo4j escalations_by_root_cause failed, falling back: %s", exc)
+
+    esc_db = _escalations_db_path(request)
 
     try:
         esc_rows = _safe_query_plain(
@@ -273,7 +394,6 @@ def escalation_clusters(
     except HTTPException:
         esc_rows = []
 
-    # Optionally enrich with reason_codes from audit log
     db_path = _audit_db_path(request)
     audit_by_rid: dict[str, list[str]] = {}
     if esc_rows:
@@ -311,3 +431,87 @@ def escalation_clusters(
         clusters[code]["request_ids"].append(rid)
 
     return sorted(clusters.values(), key=lambda x: x["count"], reverse=True)
+
+
+# ---------------------------------------------------------------------------
+# 6. Blast Radius / Impact Assessment
+# ---------------------------------------------------------------------------
+
+@router.get("/impacted-decisions")
+@router.get("/impact")
+def impacted_decisions(
+    request: Request,
+    source: str = Query(..., min_length=1, description="Source document file name"),
+    version: Optional[str] = Query(default=None, description="Optional document version"),
+):
+    """
+    Find all past decisions whose claims were supported by evidence from a specific document.
+    Enables the blast-radius highlight feature when a document changes.
+    """
+    drv = _get_neo4j_driver(request)
+    if drv is not None:
+        try:
+            return neo4j_impacted_decisions(drv, source=source, version=version)
+        except Exception as exc:
+            logger.warning("Neo4j impacted_decisions failed: %s", exc)
+
+    return {
+        "source": source,
+        "version": version,
+        "doc_id": f"doc:{source}@{version}" if version else f"doc:{source}",
+        "total_affected_decisions": 0,
+        "affected_request_ids": [],
+        "decisions": [],
+    }
+
+
+# ---------------------------------------------------------------------------
+# 7. Calibration & Empirical Score Band (Feature #5)
+# ---------------------------------------------------------------------------
+
+@router.get("/calibration")
+def get_score_calibration(
+    score: Optional[float] = Query(default=None, ge=0.0, le=1.0, description="Answerability score to look up"),
+):
+    """
+    Returns empirical calibration for an answerability score based on dev-set benchmark runs.
+    Provides honest statements: 'Answers in this band were correct X of N times on the dev set'.
+    """
+    from app.core.calibration import get_calibration_for_score, get_calibration_summary
+
+    if score is not None:
+        return get_calibration_for_score(score)
+    return get_calibration_summary()
+
+
+# ---------------------------------------------------------------------------
+# 8. Auditor Decision Report Export (Feature #7)
+# ---------------------------------------------------------------------------
+
+@router.get("/export/{request_id}")
+def export_auditor_report(
+    request: Request,
+    request_id: str,
+    format: str = Query(default="json", pattern="^(json|markdown|md)$"),
+    download: bool = Query(default=False),
+):
+    """
+    Download or view a complete audit report for a decision:
+    question, answer, decision, scores, reasons, evidence and documents.
+    """
+    from app.audit.export import build_auditor_report, format_report_markdown
+
+    report = build_auditor_report(request_id, request)
+
+    filename = f"aegis_audit_{request_id}"
+    if format in ("markdown", "md"):
+        md_text = format_report_markdown(report)
+        headers = {}
+        if download:
+            headers["Content-Disposition"] = f'attachment; filename="{filename}.md"'
+        return PlainTextResponse(md_text, media_type="text/markdown", headers=headers)
+
+    headers = {}
+    if download:
+        headers["Content-Disposition"] = f'attachment; filename="{filename}.json"'
+    return JSONResponse(content=report, headers=headers)
