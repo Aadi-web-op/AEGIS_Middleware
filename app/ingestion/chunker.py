@@ -9,6 +9,7 @@ class DocumentChunk:
     date: str | None = None
     version: str | None = None
     chunk_id: int = 0
+    document_content_hash: str | None = None
 
 
 def chunk_text(
@@ -18,6 +19,7 @@ def chunk_text(
     overlap: int = 50,
     date: str | None = None,
     version: str | None = None,
+    document_content_hash: str | None = None,
 ) -> List[DocumentChunk]:
     """
     Split document text into overlapping chunks.
@@ -50,6 +52,7 @@ def chunk_text(
                 date=date,
                 version=version,
                 chunk_id=chunk_id,
+                document_content_hash=document_content_hash,
             )
         )
 

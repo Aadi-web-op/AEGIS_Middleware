@@ -20,6 +20,7 @@ CONSTRAINTS: List[str] = [
     "CREATE CONSTRAINT evidence_id IF NOT EXISTS FOR (e:Evidence) REQUIRE e.id IS UNIQUE",
     # Documents are globally unique: doc:<source>@<version>
     "CREATE CONSTRAINT document_id IF NOT EXISTS FOR (d:Document) REQUIRE d.id IS UNIQUE",
+    "CREATE CONSTRAINT document_source_name IF NOT EXISTS FOR (s:DocumentSource) REQUIRE s.name IS UNIQUE",
     # Reasons are unique by id
     "CREATE CONSTRAINT reason_id IF NOT EXISTS FOR (r:Reason) REQUIRE r.id IS UNIQUE",
 ]

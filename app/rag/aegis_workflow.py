@@ -1,9 +1,10 @@
 
 import logging
+from collections.abc import Callable
 from datetime import date
 
 from app.providers.base import LLMProvider
-from app.schemas import Decision, EvaluateRequest, EvidenceItem, RecommendedAction
+from app.schemas import Decision, EvaluateRequest, EvaluateResponse, EvidenceItem, RecommendedAction
 from app.core.evaluator import Evaluator
 from app.rag.knowledge_base import KnowledgeBase
 
@@ -20,12 +21,14 @@ class AEGISWorkflow:
         evaluator: Evaluator,
         audit_logger=None,
         escalation_queue=None,
+        finish_evaluation: Callable[[EvaluateRequest, EvaluateResponse], EvaluateResponse] | None = None,
     ):
         self.knowledge_base = knowledge_base
         self.provider = provider
         self.evaluator = evaluator
         self.audit_logger = audit_logger
         self.escalation_queue = escalation_queue
+        self.finish_evaluation = finish_evaluation
 
     @staticmethod
     def _to_evidence_item(chunk) -> EvidenceItem:
@@ -47,6 +50,7 @@ class AEGISWorkflow:
             source=chunk.source,
             date=document_date,
             version=chunk.version,
+            document_content_hash=getattr(chunk, "document_content_hash", None),
         )
 
     def run(
@@ -90,7 +94,7 @@ class AEGISWorkflow:
                     )
                 except Exception as exc:
                     logger.warning("Failed to auto-enqueue escalation in workflow: %s", exc)
-            return empty_res
+            return self.finish_evaluation(empty_req, empty_res) if self.finish_evaluation else empty_res
 
         # Retrieve evidence and generate the baseline RAG answer.
         rag_answer = self.knowledge_base.answer(
@@ -134,4 +138,4 @@ class AEGISWorkflow:
                 )
             except Exception as exc:
                 logger.warning("Failed to auto-enqueue escalation in workflow: %s", exc)
-        return response
+        return self.finish_evaluation(request, response) if self.finish_evaluation else response

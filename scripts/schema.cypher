@@ -20,6 +20,9 @@ FOR (e:Evidence) REQUIRE e.id IS UNIQUE;
 CREATE CONSTRAINT document_id IF NOT EXISTS
 FOR (d:Document) REQUIRE d.id IS UNIQUE;
 
+CREATE CONSTRAINT document_source_name IF NOT EXISTS
+FOR (s:DocumentSource) REQUIRE s.name IS UNIQUE;
+
 CREATE CONSTRAINT reason_id IF NOT EXISTS
 FOR (r:Reason) REQUIRE r.id IS UNIQUE;
 

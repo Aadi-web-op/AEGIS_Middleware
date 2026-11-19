@@ -43,6 +43,7 @@ class EvidenceItem(BaseModel):
     source: str | None = None
     date: datetime.date | None = None
     version: str | None = None
+    document_content_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
 
 class Reason(BaseModel):
@@ -81,6 +82,24 @@ class EvaluateRequest(BaseModel):
     time_sensitive: bool = True
 
 
+class SignalChange(BaseModel):
+    signal: str
+    current: float
+    target: float
+    delta: float
+    resulting_decision: Decision
+    resulting_score: float
+    hint: str
+
+
+class PolicyExplanation(BaseModel):
+    score_only_decision: Decision
+    policy_reasons: list[Reason]
+    contributions: dict[str, float]
+    unavailable_signals: list[str]
+    minimum_change: SignalChange | None = None
+
+
 class EvaluateResponse(BaseModel):
     request_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     decision: Decision
@@ -95,3 +114,4 @@ class EvaluateResponse(BaseModel):
     policy_version: str = "0.1.0"
     latency_ms: float | None = None
     trace: dict[str, Any] | None = None
+    explanation: PolicyExplanation | None = None

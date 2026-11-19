@@ -127,11 +127,31 @@ class Neo4jGraphSink:
         clean = validate_trace(trace)
         request_id = clean["request_id"]
 
+        nodes_by_id = {node["id"]: node for node in clean["nodes"]}
+        stored_ids = {
+            node_id: (
+                f"evidence:sha256:{node['content_hash']}"
+                if node["type"] == "Evidence" and node.get("content_hash")
+                else node_id
+            )
+            for node_id, node in nodes_by_id.items()
+        }
         statements: List[Statement] = []
         for node in clean["nodes"]:
+            stored_id = stored_ids[node["id"]]
+            if stored_id != node["id"]:
+                node = {
+                    key: node[key] for key in ("type", "preview", "content_hash") if key in node
+                } | {"id": stored_id}
             statements.append(self._node_statement(node, request_id))
         for edge in clean["edges"]:
-            statements.append(self._edge_statement(edge, clean["nodes"]))
+            if (
+                edge["type"] == "CONFLICTS_WITH"
+                and stored_ids[edge["from"]] == stored_ids[edge["to"]]
+                and edge.get("document_a_id") == edge.get("document_b_id")
+            ):
+                continue
+            statements.append(self._edge_statement(edge, nodes_by_id, stored_ids))
         return statements
 
     def _node_statement(self, node: Mapping[str, Any], request_id: str) -> Statement:
@@ -200,15 +220,17 @@ class Neo4jGraphSink:
         return self._storable(raw, f"{node_type} node {node.get('id')!r}")
 
     def _edge_statement(
-        self, edge: Mapping[str, Any], nodes: Sequence[Mapping[str, Any]]
+        self,
+        edge: Mapping[str, Any],
+        nodes: Mapping[str, Mapping[str, Any]],
+        stored_ids: Mapping[str, str],
     ) -> Statement:
         rel_type = edge["type"]
         if not is_relationship_type(rel_type):
             raise TraceContractError(f"refusing to write relationship {rel_type!r}")
 
-        labels = {node["id"]: node["type"] for node in nodes}
-        start_label = labels[edge["from"]]
-        end_label = labels[edge["to"]]
+        start_label = nodes[edge["from"]]["type"]
+        end_label = nodes[edge["to"]]["type"]
         if not (is_node_type(start_label) and is_node_type(end_label)):
             raise TraceContractError(
                 f"edge {rel_type} connects an unknown node label"
@@ -219,26 +241,40 @@ class Neo4jGraphSink:
             f"{rel_type} edge {edge['from']}->{edge['to']}",
         )
 
+        if rel_type == "USES_DOCUMENT":
+            props["evidence_ids"] = sorted({stored_ids[node_id] for node_id in props["evidence_ids"]})
         params: Dict[str, Any] = {
-            "from_id": edge["from"],
-            "to_id": edge["to"],
+            "from_id": stored_ids[edge["from"]],
+            "to_id": stored_ids[edge["to"]],
             "props": props,
         }
 
-        # A pair of passages can conflict numerically *and* by statement.
-        # Keying the MERGE on `kind` keeps those as two edges while still
-        # being idempotent for each of them.
+        # Conflicts retain both their kind and the occurrence that reported them.
         if rel_type in _KIND_SCOPED_RELATIONSHIPS and edge.get("kind") is not None:
             merge_pattern = f"MERGE (a)-[r:{rel_type} {{kind: $kind}}]->(b)"
             params["kind"] = edge["kind"]
+            if edge.get("occurrence_id"):
+                merge_pattern = (
+                    f"MERGE (a)-[r:{rel_type} {{kind: $kind, occurrence_id: $occurrence_id}}]->(b)"
+                )
+                params["occurrence_id"] = edge["occurrence_id"]
+        elif rel_type in ("SUPPORTED_BY", "CONTRADICTED_BY", "ABOUT") and edge.get("document_id"):
+            merge_pattern = f"MERGE (a)-[r:{rel_type} {{document_id: $document_id}}]->(b)"
+            params["document_id"] = edge["document_id"]
         else:
             merge_pattern = f"MERGE (a)-[r:{rel_type}]->(b)"
 
+        set_properties = "SET r += $props"
+        if rel_type == "SUPERSEDES":
+            set_properties = (
+                "WITH r, $props AS props\n"
+                "SET r += CASE WHEN r.inferred = false THEN props{.*, inferred: false} ELSE props END"
+            )
         cypher = (
             f"MATCH (a:{start_label} {{id: $from_id}})\n"
             f"MATCH (b:{end_label} {{id: $to_id}})\n"
             f"{merge_pattern}\n"
-            "SET r += $props"
+            f"{set_properties}"
         )
         return cypher, params
 
