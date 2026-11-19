@@ -3,7 +3,7 @@ import logging
 from datetime import date
 
 from app.providers.base import LLMProvider
-from app.schemas import Decision, EvaluateRequest, EvidenceItem, RecommendedAction
+from app.schemas import Decision, EvaluateRequest, EvaluateResponse, EvidenceItem, RecommendedAction
 from app.core.evaluator import Evaluator
 from app.rag.knowledge_base import KnowledgeBase
 
@@ -70,7 +70,7 @@ class AEGISWorkflow:
                 profile=profile,
                 time_sensitive=time_sensitive,
             )
-            empty_res = self.evaluator.evaluate(empty_req)
+            empty_res = _with_answer(self.evaluator.evaluate(empty_req), empty_req.answer)
             if self.audit_logger is not None:
                 self.audit_logger.log_evaluation(empty_req, empty_res, generation_success=None)
             if self.escalation_queue is not None and (
@@ -113,7 +113,7 @@ class AEGISWorkflow:
         )
 
         # Use the team's existing evaluator and signals.
-        response = self.evaluator.evaluate(request)
+        response = _with_answer(self.evaluator.evaluate(request), request.answer)
         if self.audit_logger is not None:
             self.audit_logger.log_evaluation(request, response, generation_success=True)
 
@@ -135,3 +135,14 @@ class AEGISWorkflow:
             except Exception as exc:
                 logger.warning("Failed to auto-enqueue escalation in workflow: %s", exc)
         return response
+
+
+def _with_answer(response, answer: str):
+    """Attach the generated answer to the response (claim spans index into it).
+
+    Done before audit logging so decision history keeps it too. Anything
+    that is not an EvaluateResponse (test doubles) passes through unchanged.
+    """
+    if isinstance(response, EvaluateResponse):
+        response.answer = answer
+    return response

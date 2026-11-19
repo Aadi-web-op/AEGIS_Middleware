@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.audit import AuditLogger
+from app.audit import AuditLogger, decisions_router
 from app.core.config import UnknownProfileError
 from app.core.evaluator import Evaluator
 from app.escalation import EscalationQueue, escalation_router
@@ -18,9 +18,13 @@ from app.graph.insights import (
     impacted_decisions_for_document,
     outdated_documents_retrieved,
 )
+from app.graph.async_sink import AsyncGraphSink
+from app.graph.driver import make_driver
 from app.graph.neo4j_sink import Neo4jGraphSink
+from app.graph.routes import router as graph_router
 from app.graph.sink import GraphSink
 from app.insights import insights_router
+from app.intelligence import intelligence_router
 from app.rag.routes import router as rag_router
 from app.schemas import Decision, EvaluateRequest, EvaluateResponse, RecommendedAction
 
@@ -40,11 +44,10 @@ def _init_neo4j_driver() -> Any | None:
     if not uri:
         return None
     try:
-        from neo4j import GraphDatabase
-
         user = os.environ.get("NEO4J_USER", "neo4j")
         password = os.environ.get("NEO4J_PASSWORD", "password")
-        return GraphDatabase.driver(uri, auth=(user, password))
+        # Short timeouts: a dead Neo4j must be noticed in seconds.
+        return make_driver(uri, user, password)
     except Exception:
         logger.warning("Could not initialize Neo4j driver for %s", uri)
         return None
@@ -70,12 +73,20 @@ def create_app(
     if evaluator is None:
         sink = graph_sink
         if sink is None and driver is not None:
-            sink = Neo4jGraphSink(driver)
+            # Background writer: Neo4j is never on the decision path.
+            sink = AsyncGraphSink(Neo4jGraphSink(driver))
         evaluator = Evaluator(default_signals(), graph_sink=sink)
     elif graph_sink is not None:
         evaluator.graph_sink = graph_sink
     elif driver is not None and getattr(evaluator, "graph_sink", None) is None:
-        evaluator.graph_sink = Neo4jGraphSink(driver)
+        evaluator.graph_sink = AsyncGraphSink(Neo4jGraphSink(driver))
+
+    def _close_graph_writer() -> None:
+        writer = getattr(app.state.evaluator, "graph_sink", None)
+        if isinstance(writer, AsyncGraphSink):
+            writer.close(timeout=5.0)
+
+    app.add_event_handler("shutdown", _close_graph_writer)
 
     app.state.evaluator = evaluator
     app.state.audit_logger = audit_logger if audit_logger is not None else AuditLogger()
@@ -86,6 +97,9 @@ def create_app(
     app.include_router(rag_router)
     app.include_router(escalation_router)
     app.include_router(insights_router)
+    app.include_router(graph_router)
+    app.include_router(decisions_router)
+    app.include_router(intelligence_router)
 
     app.add_middleware(
         CORSMiddleware,

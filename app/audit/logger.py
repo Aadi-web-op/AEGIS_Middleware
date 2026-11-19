@@ -78,7 +78,8 @@ class AuditLogger:
                 reason_codes TEXT,
                 generation_success INTEGER,
                 error_message TEXT,
-                latency_ms REAL
+                latency_ms REAL,
+                response_json TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_logs(timestamp);
             CREATE INDEX IF NOT EXISTS idx_audit_decision ON audit_logs(decision);
@@ -86,9 +87,24 @@ class AuditLogger:
         if self._is_memory:
             with self._shared_conn:
                 self._shared_conn.executescript(sql)
+                self._migrate(self._shared_conn)
         else:
             with sqlite3.connect(self.db_path) as conn:
                 conn.executescript(sql)
+                self._migrate(conn)
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """Add columns introduced after the first schema to an existing DB.
+
+        `response_json` holds the full EvaluateResponse (including the
+        decision trace, whose evidence previews are already capped at 120
+        characters). It makes a decision reviewable without Neo4j and lets
+        `scripts/rebuild_graph.py` replay the graph from SQLite.
+        """
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(audit_logs)")}
+        if "response_json" not in columns:
+            conn.execute("ALTER TABLE audit_logs ADD COLUMN response_json TEXT")
 
     def log_evaluation(
         self,
@@ -135,6 +151,7 @@ class AuditLogger:
                 ),
                 "error_message": None,
                 "latency_ms": response.latency_ms,
+                "response_json": sanitize_secrets(response.model_dump_json()),
             }
 
             self._insert_record(record)
@@ -170,6 +187,7 @@ class AuditLogger:
                 "generation_success": 0,
                 "error_message": sanitized_error,
                 "latency_ms": None,
+                "response_json": None,
             }
 
             self._insert_record(record)
@@ -183,11 +201,11 @@ class AuditLogger:
             INSERT OR REPLACE INTO audit_logs (
                 request_id, timestamp, query, answer, profile, decision,
                 answerability_score, signals, reason_codes, generation_success,
-                error_message, latency_ms
+                error_message, latency_ms, response_json
             ) VALUES (
                 :request_id, :timestamp, :query, :answer, :profile, :decision,
                 :answerability_score, :signals, :reason_codes, :generation_success,
-                :error_message, :latency_ms
+                :error_message, :latency_ms, :response_json
             )
         """
         if self._is_memory:
@@ -209,18 +227,7 @@ class AuditLogger:
                 row = cursor.fetchone()
                 if row is None:
                     return None
-                res = dict(row)
-                if res.get("signals"):
-                    try:
-                        res["signals"] = json.loads(res["signals"])
-                    except Exception:
-                        pass
-                if res.get("reason_codes"):
-                    try:
-                        res["reason_codes"] = json.loads(res["reason_codes"])
-                    except Exception:
-                        pass
-                return res
+                return self._decode_row(dict(row), include_response=True)
             finally:
                 if not self._is_memory and conn is not None:
                     conn.close()
@@ -228,7 +235,14 @@ class AuditLogger:
             logger.warning("Failed to retrieve record from audit log: %s", exc)
             return None
 
-    def list_records(self, limit: int = 50) -> list[dict]:
+    def list_records(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        decision: str | None = None,
+        include_response: bool = False,
+    ) -> list[dict]:
+        """Newest-first audit records, optionally filtered by decision."""
         try:
             conn = self._shared_conn if self._is_memory else sqlite3.connect(self.db_path)
             if conn is None:
@@ -236,29 +250,57 @@ class AuditLogger:
             try:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
-                cursor.execute("SELECT * FROM audit_logs ORDER BY timestamp DESC LIMIT ?", (limit,))
-                rows = cursor.fetchall()
-                results = []
-                for row in rows:
-                    res = dict(row)
-                    if res.get("signals"):
-                        try:
-                            res["signals"] = json.loads(res["signals"])
-                        except Exception:
-                            pass
-                    if res.get("reason_codes"):
-                        try:
-                            res["reason_codes"] = json.loads(res["reason_codes"])
-                        except Exception:
-                            pass
-                    results.append(res)
-                return results
+                sql = "SELECT * FROM audit_logs"
+                params: list = []
+                if decision:
+                    sql += " WHERE decision = ?"
+                    params.append(decision)
+                sql += " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+                params.extend([limit, offset])
+                cursor.execute(sql, params)
+                return [
+                    self._decode_row(dict(row), include_response)
+                    for row in cursor.fetchall()
+                ]
             finally:
                 if not self._is_memory and conn is not None:
                     conn.close()
         except Exception as exc:
             logger.warning("Failed to list records from audit log: %s", exc)
             return []
+
+    def count_records(self) -> dict[str, int]:
+        """Total evaluations and a per-decision breakdown."""
+        try:
+            conn = self._shared_conn if self._is_memory else sqlite3.connect(self.db_path)
+            try:
+                rows = conn.execute(
+                    "SELECT coalesce(decision, 'GENERATION_FAILED'), count(*) "
+                    "FROM audit_logs GROUP BY 1"
+                ).fetchall()
+            finally:
+                if not self._is_memory:
+                    conn.close()
+            return {str(k): int(v) for k, v in rows}
+        except Exception as exc:
+            logger.warning("Failed to count audit records: %s", exc)
+            return {}
+
+    @staticmethod
+    def _decode_row(res: dict, include_response: bool) -> dict:
+        for key in ("signals", "reason_codes"):
+            if res.get(key):
+                try:
+                    res[key] = json.loads(res[key])
+                except Exception:
+                    pass
+        raw = res.pop("response_json", None)
+        if include_response:
+            try:
+                res["response"] = json.loads(raw) if raw else None
+            except Exception:
+                res["response"] = None
+        return res
 
     def close(self) -> None:
         if self._is_memory and self._shared_conn:

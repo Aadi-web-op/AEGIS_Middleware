@@ -8,6 +8,7 @@ from torch.nn.functional import cosine_similarity
 
 from aegis_core.signals.base import BaseSignal, SignalResult, SignalName
 from aegis_core.models.registry import model_registry, ModelConfig, ModelType, EMBEDDING_CANDIDATES, CROSS_ENCODER_CANDIDATES
+from aegis_core.utils.claim_split import content_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +146,21 @@ class RelevanceSignal(BaseSignal):
         
         # Normalize score to [0, 1] using sigmoid-like scaling
         # This maps raw cosine similarity (typically 0.2-0.8 for relevant) to 0-1
-        normalized_score = self._normalize_score(max_sim)
+        dense_score = self._normalize_score(max_sim)
+
+        # Hybrid relevance. A sentence embedding of a short, generic question
+        # ("What does the report conclude?") sits far from a passage that
+        # answers it word for word (measured cosine 0.40). Lexical coverage of
+        # the question's own content words is the standard complement to a
+        # dense score. It can only raise relevance, and only half-way, so a
+        # passage that merely shares vocabulary never reaches a high score on
+        # words alone. The answer is deliberately not used: an off-topic
+        # answer that parrots an off-topic passage must stay irrelevant.
+        lexical_coverage = self._lexical_coverage(query, evidence_to_process)
+        normalized_score = dense_score
+        if lexical_coverage is not None and lexical_coverage > dense_score:
+            normalized_score = (dense_score + lexical_coverage) / 2.0
+        normalized_score = max(0.0, min(1.0, normalized_score))
         
         # Generate reasons
         reasons = self._generate_reasons(
@@ -163,6 +178,8 @@ class RelevanceSignal(BaseSignal):
             "similarity_threshold": self.similarity_threshold,
             "per_evidence_similarities": sims_np.tolist(),
             "embedding_model": self.embedding_config.name,
+            "dense_relevance": dense_score,
+            "lexical_coverage": lexical_coverage,
         }
         
         if ce_scores is not None:
@@ -180,6 +197,21 @@ class RelevanceSignal(BaseSignal):
             details=details
         )
     
+    @staticmethod
+    def _lexical_coverage(query: str, passages: List[str]) -> Optional[float]:
+        """Best share of the query's content words found in one passage.
+
+        None when the query has fewer than two content words: a single shared
+        word is too little to call a passage on-topic.
+        """
+        terms = content_tokens(query)
+        if len(terms) < 2:
+            return None
+        best = 0.0
+        for passage in passages:
+            best = max(best, len(terms & content_tokens(passage)) / len(terms))
+        return round(best, 4)
+
     def _normalize_score(self, raw_similarity: float) -> float:
         """
         Normalize cosine similarity to [0, 1] relevance score.

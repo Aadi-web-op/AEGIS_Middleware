@@ -71,6 +71,33 @@ class ClaimResult(BaseModel):
     status: ClaimStatus
     support: float = Field(ge=0.0, le=1.0)
     evidence_indices: list[int] = Field(default_factory=list)
+    # --- additive (finale contract, section 2) ---
+    supporting_evidence_indices: list[int] = Field(default_factory=list)
+    contradicting_evidence_indices: list[int] = Field(default_factory=list)
+    # Why this claim got its status, in plain language.
+    reason: str | None = None
+    # [start, end) character offsets of the claim inside the request's
+    # `answer` when it is a verbatim substring, else None.
+    span: list[int] | None = None
+    # Share of the claim's content words found in its best passage (0..1).
+    # None when it was not measured.
+    grounding: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class ExplanationFactor(BaseModel):
+    """One measured value that pushed the decision, and how."""
+    signal: str
+    value: float | None = None
+    threshold: float | None = None
+    comparison: str | None = None  # "below" | "above" | "at_or_above" | "unavailable" | ...
+    effect: Decision | None = None
+    message: str
+
+
+class Explanation(BaseModel):
+    summary: str
+    decisive_rule: str | None = None
+    factors: list[ExplanationFactor] = Field(default_factory=list)
 
 
 class EvaluateRequest(BaseModel):
@@ -95,3 +122,11 @@ class EvaluateResponse(BaseModel):
     policy_version: str = "0.1.0"
     latency_ms: float | None = None
     trace: dict[str, Any] | None = None
+    # --- additive (finale contract, section 2); optional for old clients ---
+    headline: str | None = None
+    unavailable_signals: list[str] = Field(default_factory=list)
+    explanation: Explanation | None = None
+    # The answer text that was evaluated, when the server produced it (the
+    # RAG workflow generates it). `claims[].span` offsets index into this
+    # string. None for /v1/evaluate, where the caller supplied the answer.
+    answer: str | None = None

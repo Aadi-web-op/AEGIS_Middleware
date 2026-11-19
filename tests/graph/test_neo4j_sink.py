@@ -41,7 +41,8 @@ def sink(driver):
 def test_valid_trace_writes_every_node_and_edge(sink, driver, trace):
     assert sink.write_trace(trace) is True
 
-    assert len(driver.calls) == len(trace["nodes"]) + len(trace["edges"])
+    # One MERGE per node and edge, plus the cross-trace SUPERSEDES linker.
+    assert len(driver.calls) == len(trace["nodes"]) + len(trace["edges"]) + 1
     assert driver.transactions == 1, "everything belongs to one write transaction"
     assert driver.sessions[0].database == "aegis"
 
@@ -51,7 +52,8 @@ def test_valid_trace_writes_every_node_and_edge(sink, driver, trace):
     relationships = {call.relationship for call in driver.edge_merges()}
     assert relationships <= set(RELATIONSHIP_TYPES)
     assert {"HAS_CLAIM", "SUPPORTED_BY", "CONTRADICTED_BY", "FROM",
-            "CONFLICTS_WITH", "SUPERSEDES", "BECAUSE", "ABOUT"} == relationships
+            "CONFLICTS_WITH", "SUPERSEDES", "BECAUSE", "ABOUT",
+            "RETRIEVED"} == relationships
 
 
 def test_every_statement_is_a_merge_with_parameters_only(sink, driver, trace):
@@ -309,7 +311,7 @@ def test_every_stored_preview_is_within_the_cap(sink, driver, trace):
     previews = [
         value
         for call in driver.calls
-        for key, value in call.params["props"].items()
+        for key, value in call.params.get("props", {}).items()
         if key == "preview" or key.endswith("_preview")
     ]
     assert previews, "the canonical trace does store previews"

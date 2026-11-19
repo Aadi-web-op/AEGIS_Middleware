@@ -122,7 +122,9 @@ cd frontend
 npm install
 npm run dev
 ```
-Open [http://localhost:5173](http://localhost:5173) to access the interactive Decision Graph and side-by-side RAG demonstration.
+Open [http://localhost:5173](http://localhost:5173) to access the AEGIS Trust Console (TanStack Start + Tailwind): Overview, Live Evaluation, Decisions, Intelligence, Graph Explorer, Documents, Escalations and System.
+
+In dev the console talks to `http://127.0.0.1:8000` by default; set `VITE_AEGIS_API` to point it at another backend, or change it at runtime on the System page. A deployed frontend origin must be listed in the backend's `AEGIS_CORS_ORIGINS`. `npm run build` produces a Cloudflare Worker bundle in `frontend/.output/`.
 
 ---
 

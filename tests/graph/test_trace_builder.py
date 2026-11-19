@@ -33,7 +33,13 @@ def test_a_minimal_trace_is_just_a_decision():
     trace = build_trace(request_id="r1", decision="ABSTAIN")
     assert validate_trace(trace)
     assert trace["nodes"] == [
-        {"id": "r1", "type": "Decision", "request_id": "r1", "decision": "ABSTAIN"}
+        {
+            "id": "r1",
+            "type": "Decision",
+            "request_id": "r1",
+            "decision": "ABSTAIN",
+            "trace_version": "2",
+        }
     ]
     assert trace["edges"] == []
     # An absent headline is left out rather than stored as a null property.

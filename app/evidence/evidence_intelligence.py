@@ -28,6 +28,7 @@ and `policy.py` reads it as a veto. Inverting it here would double-invert it.
 
 from __future__ import annotations
 
+import copy
 import datetime
 import threading
 from typing import Any, Dict, List, Optional, Tuple
@@ -81,10 +82,33 @@ def _evidence_payload(
     Metadata is omitted entirely when no item carries a source or version, so
     the engine can skip its version-conflict pass.
     """
+    texts, metadata, _index_map = _normalised_payload(evidence)
+    return texts, metadata
+
+
+def _normalised_payload(
+    evidence: List[EvidenceItem],
+) -> Tuple[List[str], Optional[List[Dict[str, Any]]], List[int]]:
+    """Texts, aligned metadata, and the request index of every kept passage.
+
+    The engine drops blank passages and case-insensitive duplicates before it
+    measures anything, and every index it reports refers to that shortened
+    list. Doing the same filtering here, first, keeps three things in step
+    that otherwise drift apart as soon as a request contains a duplicate or
+    blank passage: the texts, their metadata, and `index_map[i]` -- the
+    position in the caller's evidence list that engine index `i` stands for.
+    """
     texts: List[str] = []
     metadata: List[Dict[str, Any]] = []
+    index_map: List[int] = []
+    seen: set = set()
 
-    for item in evidence:
+    for position, item in enumerate(evidence):
+        key = item.text.strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        index_map.append(position)
         texts.append(item.text)
         metadata.append(
             {
@@ -95,7 +119,65 @@ def _evidence_payload(
         )
 
     useful = any(m["source"] or m["version"] or m["date"] for m in metadata)
-    return texts, (metadata if useful else None)
+    return texts, (metadata if useful else None), index_map
+
+
+# Keys whose values are evidence indices, in the engine's `details`.
+_INDEX_SCALAR_KEYS = frozenset({"index_a", "index_b", "evidence_index"})
+_INDEX_LIST_KEYS = frozenset({
+    "supporting_evidence_indices",
+    "contradicting_evidence_indices",
+    "evidence_indices",
+})
+
+
+def _remap_indices(value: Any, index_map: List[int]) -> Any:
+    """Rewrite engine evidence indices as request evidence indices."""
+
+    def one(index: Any) -> Any:
+        if isinstance(index, int) and not isinstance(index, bool) and 0 <= index < len(index_map):
+            return index_map[index]
+        return index
+
+    if isinstance(value, dict):
+        out: Dict[str, Any] = {}
+        for key, item in value.items():
+            if key in _INDEX_SCALAR_KEYS:
+                out[key] = one(item)
+            elif key in _INDEX_LIST_KEYS and isinstance(item, list):
+                out[key] = [one(i) for i in item]
+            else:
+                out[key] = _remap_indices(item, index_map)
+        return out
+    if isinstance(value, list):
+        return [_remap_indices(item, index_map) for item in value]
+    return value
+
+
+def _model_failure(name: str, details: Dict[str, Any]) -> Optional[str]:
+    """Why this signal's value is a placeholder rather than a measurement.
+
+    The engine reports a failed model as an ordinary number (0.0 support,
+    0.0 contradiction, 0.0 relevance). Passing that on would tell the policy
+    engine "the answer is unsupported" or "nothing conflicts" when in fact
+    nothing was checked. Returns None when the value is a real measurement.
+    """
+    if "error" in details and name in ("relevance", "completeness"):
+        return "the embedding model failed"
+    if name == "entailment":
+        claims = details.get("claims")
+        if isinstance(claims, list) and claims and all(
+            isinstance(c, dict) and c.get("nli_available") is False for c in claims
+        ):
+            return "the NLI model was unavailable, so no claim was verified"
+    if name == "contradiction" and details.get("nli_available") is False:
+        rule_based = any(
+            details.get(key) for key in ("numeric_mismatches", "date_mismatches", "version_conflicts")
+        )
+        # A rule-based conflict is still a real finding without the model.
+        if not rule_based:
+            return "the NLI model was unavailable, so statements were not compared"
+    return None
 
 
 def _cache_key(query: str, answer: str, evidence: List[EvidenceItem]) -> _CacheKey:
@@ -136,6 +218,7 @@ class EvidenceIntelligence:
         self._lock = threading.Lock()
         self._key: Optional[_CacheKey] = None
         self._result: Optional[EvidenceResult] = None
+        self._index_map: List[int] = []
 
     def result_for(
         self, query: str, answer: str, evidence: List[EvidenceItem]
@@ -146,7 +229,7 @@ class EvidenceIntelligence:
             if self._key == key and self._result is not None:
                 return self._result
 
-            texts, metadata = _evidence_payload(evidence)
+            texts, metadata, index_map = _normalised_payload(evidence)
             result = self.engine.evaluate(
                 query=query,
                 answer=answer,
@@ -158,7 +241,17 @@ class EvidenceIntelligence:
             # entry in place and reaches the caller's run() wrapper untouched.
             self._key = key
             self._result = result
+            self._index_map = index_map
             return result
+
+    def index_map_for(
+        self, query: str, answer: str, evidence: List[EvidenceItem]
+    ) -> List[int]:
+        """Request index of each engine evidence index, for the cached triple."""
+        with self._lock:
+            if self._key == _cache_key(query, answer, evidence):
+                return list(self._index_map)
+        return _normalised_payload(evidence)[2]
 
 
 class _EvidenceSignal(Signal):
@@ -178,6 +271,15 @@ class _EvidenceSignal(Signal):
         body = result.signals[self.name]
         details = dict(body["details"])
 
+        # Engine indices -> request indices (differs only when the request
+        # held a blank or duplicate passage).
+        index_map = self.intelligence.index_map_for(query, answer, evidence)
+        if index_map != list(range(len(index_map))):
+            details = _remap_indices(copy.deepcopy(details), index_map)
+        if len(index_map) != len(evidence):
+            details["evidence_dropped"] = len(evidence) - len(index_map)
+            details["evidence_index_map"] = index_map
+
         # Keep every engine reason, including the purely informational ones
         # ("No contradiction detected"), which must not become a Reason.
         details["engine_reasons"] = list(body["reasons"])
@@ -187,6 +289,20 @@ class _EvidenceSignal(Signal):
             Reason(code=_REASON_CODE[self.name], message=message)
             for message in self._findings(body["details"])
         ]
+
+        failure = _model_failure(self.name, body["details"])
+        if failure is not None:
+            details["model_failure"] = failure
+            return SignalResult(
+                value=None,
+                reasons=[
+                    Reason(
+                        code=ReasonCode.SIGNAL_UNAVAILABLE,
+                        message=f"The {self.name} signal could not be computed ({failure}).",
+                    )
+                ],
+                details=details,
+            )
         return SignalResult(value=body["value"], reasons=reasons, details=details)
 
 

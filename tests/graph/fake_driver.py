@@ -119,6 +119,51 @@ class FakeDriver:
         return [c.params["props"] for c in self.node_merges(label)]
 
 
+class FakeReadDriver:
+    """A read-only fake: answers `execute_read` queries from a responder.
+
+    `responder(cypher, params)` returns a list of row dicts (or raises, to
+    simulate an unreachable server). Every query is recorded so tests can
+    assert that request values only ever travel as parameters.
+    """
+
+    def __init__(
+        self,
+        responder: Optional[Callable[[str, Dict[str, Any]], List[Dict[str, Any]]]] = None,
+        fail: bool = False,
+    ):
+        self.responder = responder or (lambda cypher, params: [])
+        self.fail = fail
+        self.queries: List[Call] = []
+        self.closed = False
+
+    def session(self, **kwargs: Any) -> "_FakeReadSession":
+        if self.fail:
+            raise RuntimeError("fake driver: Neo4j is unreachable")
+        return _FakeReadSession(self)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeReadSession:
+    def __init__(self, driver: FakeReadDriver):
+        self._driver = driver
+
+    def __enter__(self) -> "_FakeReadSession":
+        return self
+
+    def __exit__(self, *exc_info: Any) -> bool:
+        return False
+
+    def run(self, cypher: str, **params: Any) -> List[Dict[str, Any]]:
+        self._driver.queries.append(Call(cypher, dict(params)))
+        return list(self._driver.responder(cypher, dict(params)))
+
+    def execute_read(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        return fn(self, *args, **kwargs)
+
+
 @dataclass
 class FakeGraph:
     """Replays recorded statements into an in-memory graph."""
@@ -132,7 +177,11 @@ class FakeGraph:
         for call in driver.calls:
             if call.is_node_merge:
                 key = (call.label or "", str(call.params["merge_key"]))
-                graph.nodes.setdefault(key, {}).update(call.params["props"])
+                node = graph.nodes.setdefault(key, {})
+                node.update(call.params["props"])
+                if call.params.get("created_at") is not None:
+                    # mirrors `SET n.created_at = coalesce(n.created_at, $created_at)`
+                    node.setdefault("created_at", call.params["created_at"])
             elif call.relationship:
                 key = (
                     str(call.params["from_id"]),

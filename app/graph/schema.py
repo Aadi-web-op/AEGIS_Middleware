@@ -34,6 +34,12 @@ INDEXES: List[str] = [
     "CREATE INDEX document_version IF NOT EXISTS FOR (d:Document) ON (d.version)",
     # Reason code lookup for root cause analysis
     "CREATE INDEX reason_code IF NOT EXISTS FOR (r:Reason) ON (r.code)",
+    # Newest-first decision lists and time-ordered stale-usage queries
+    "CREATE INDEX decision_created_at IF NOT EXISTS FOR (d:Decision) ON (d.created_at)",
+    # Knowledge-gap grouping by topic key
+    "CREATE INDEX decision_topic IF NOT EXISTS FOR (d:Decision) ON (d.topic)",
+    # Evidence by source (per-document evidence lookups)
+    "CREATE INDEX evidence_source IF NOT EXISTS FOR (e:Evidence) ON (e.source)",
     # Relationship property index for conflict kinds
     "CREATE INDEX conflicts_with_kind IF NOT EXISTS FOR ()-[r:CONFLICTS_WITH]-() ON (r.kind)",
 ]

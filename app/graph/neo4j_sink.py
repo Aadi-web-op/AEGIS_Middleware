@@ -22,6 +22,16 @@ types, because Cypher cannot parameterise them -- and those come from the
 closed allow-lists in `app.graph.contract`, never from trace content. A
 label or relationship type that is not on the list makes the write fail
 instead of reaching the database.
+
+Cross-trace SUPERSEDES
+----------------------
+A trace can only order the document versions it saw together. After its
+own MERGEs, a write therefore runs one more parameterised statement
+(`LINK_SUPERSEDES_CYPHER`) that links every pair of Document nodes
+sharing a `source` named in this trace, newer -> older, using the
+`date_key` / `version_key` sort keys the trace builder stores. It is a
+MERGE scoped to those sources, so it is idempotent and never scans the
+whole graph.
 """
 
 from __future__ import annotations
@@ -32,6 +42,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from app.graph.contract import (
     CLAIM_TEXT_CHARS,
     EVIDENCE_PREVIEW_CHARS,
+    QUERY_PREVIEW_CHARS,
     TraceContractError,
     is_node_type,
     is_relationship_type,
@@ -56,6 +67,37 @@ _STRUCTURAL_EDGE_KEYS = frozenset({"type", "from", "to"})
 # Relationship types that may legitimately exist more than once between the
 # same pair of nodes, distinguished by `kind`.
 _KIND_SCOPED_RELATIONSHIPS = frozenset({"CONFLICTS_WITH"})
+
+# Previews with their own cap. Everything else named `preview` or
+# `*_preview` gets the evidence cap.
+_PREVIEW_CAPS = {"query_preview": QUERY_PREVIEW_CHARS}
+
+# Newer -> older between Document nodes of the same source. Mirrors
+# `trace_builder._supersedes_order`: a differing date decides; otherwise
+# numeric version parts of equal arity decide; otherwise no edge.
+LINK_SUPERSEDES_CYPHER = (
+    "UNWIND $sources AS src\n"
+    "MATCH (a:Document {source: src})\n"
+    "MATCH (b:Document {source: src})\n"
+    "WHERE a.id <> b.id AND (\n"
+    "  (a.date_key IS NOT NULL AND b.date_key IS NOT NULL AND a.date_key > b.date_key)\n"
+    "  OR (\n"
+    "    (a.date_key IS NULL OR b.date_key IS NULL OR a.date_key = b.date_key)\n"
+    "    AND a.version_key IS NOT NULL AND b.version_key IS NOT NULL\n"
+    "    AND size(a.version_key) = size(b.version_key)\n"
+    "    AND a.version_key > b.version_key\n"
+    "  )\n"
+    ")\n"
+    "MERGE (a)-[s:SUPERSEDES]->(b)\n"
+    "SET s.derived = coalesce(s.derived, $derived)"
+)
+
+
+def _redact(text: str) -> str:
+    """Secret redaction for a stored query preview (defence in depth)."""
+    from app.audit.logger import sanitize_secrets  # lazy: avoids an import cycle
+
+    return sanitize_secrets(text) or ""
 
 
 def _is_storable(value: Any) -> bool:
@@ -83,11 +125,13 @@ class Neo4jGraphSink:
         self,
         driver: Any,
         database: Optional[str] = None,
+        link_supersedes: bool = True,
     ) -> None:
         if driver is None:
             raise ValueError("Neo4jGraphSink requires a driver")
         self._driver = driver
         self._database = database
+        self._link_supersedes = link_supersedes
         self.last_error: Optional[str] = None
 
     # ------------------------------------------------------------------
@@ -99,11 +143,15 @@ class Neo4jGraphSink:
         password: str,
         database: Optional[str] = None,
     ) -> "Neo4jGraphSink":
-        """Build a sink against a real Neo4j. Not used by any test."""
-        from neo4j import GraphDatabase  # imported lazily: optional dependency
+        """Build a sink against a real Neo4j (short connection timeouts)."""
+        from app.graph.driver import make_driver  # lazy: neo4j is optional
 
-        driver = GraphDatabase.driver(uri, auth=(user, password))
-        return cls(driver, database=database)
+        return cls(make_driver(uri, user, password), database=database)
+
+    @property
+    def driver(self) -> Any:
+        """The injected driver (for schema setup and read queries)."""
+        return self._driver
 
     def close(self) -> None:
         """Close the injected driver, if it supports closing."""
@@ -132,6 +180,24 @@ class Neo4jGraphSink:
             statements.append(self._node_statement(node, request_id))
         for edge in clean["edges"]:
             statements.append(self._edge_statement(edge, clean["nodes"]))
+
+        if self._link_supersedes:
+            sources = sorted(
+                {
+                    node["source"]
+                    for node in clean["nodes"]
+                    if node["type"] == "Document"
+                    and isinstance(node.get("source"), str)
+                    and node["source"]
+                }
+            )
+            if sources:
+                statements.append(
+                    (
+                        LINK_SUPERSEDES_CYPHER,
+                        {"sources": sources, "derived": "same_source_order"},
+                    )
+                )
         return statements
 
     def _node_statement(self, node: Mapping[str, Any], request_id: str) -> Statement:
@@ -164,7 +230,15 @@ class Neo4jGraphSink:
                 "MERGE (n:Decision {request_id: $merge_key})\n"
                 "SET n += $props"
             )
-            return cypher, {"merge_key": request_id, "props": props}
+            params: Dict[str, Any] = {"merge_key": request_id, "props": props}
+            created_at = props.pop("created_at", None)
+            if created_at is not None:
+                # First write wins: replaying or re-seeding a decision must
+                # not move it in time, or "used after the newer version
+                # appeared" stops meaning anything.
+                cypher += "\nSET n.created_at = coalesce(n.created_at, $created_at)"
+                params["created_at"] = str(created_at)
+            return cypher, params
 
         props["id"] = node["id"]
         cypher = (
@@ -191,7 +265,20 @@ class Neo4jGraphSink:
 
         # Every preview is capped, on every node type, every time.
         for key in preview_keys(list(raw)):
-            raw[key] = truncate_preview(raw[key], EVIDENCE_PREVIEW_CHARS)
+            if raw[key] is None:
+                continue
+            text = str(raw[key])
+            if key == "query_preview":
+                text = _redact(text)
+            raw[key] = truncate_preview(
+                text, _PREVIEW_CAPS.get(key, EVIDENCE_PREVIEW_CHARS)
+            )
+
+        if node_type == "Document":
+            # A Document is shared across decisions. A trace that happens
+            # not to know its date must not erase what another trace stored
+            # (SET n += {date: null} would remove the property).
+            raw = {k: v for k, v in raw.items() if v is not None}
 
         if node_type == "Claim" and isinstance(raw.get("text"), str):
             # Answer-derived, not retrieved, so it is stored -- but bounded.
