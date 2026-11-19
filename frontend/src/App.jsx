@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import "./App.css";
 import DecisionGraph from "./DecisionGraph.jsx";
 import EscalationQueue from "./EscalationQueue.jsx";
+import EvidenceHighlight from "./EvidenceHighlight.jsx";
 import ExplanationPanel from "./ExplanationPanel.jsx";
 import { buildGraphFromTrace } from "./graphUtils.js";
 import InsightsDashboard from "./InsightsDashboard.jsx";
@@ -282,6 +283,7 @@ function GraphView({ trace, useMock, onToggleMock }) {
           </div>
           <div className="explanation-pane">
             <ExplanationPanel trace={effectiveTrace} />
+            <EvidenceHighlight trace={effectiveTrace} />
           </div>
         </div>
       )}

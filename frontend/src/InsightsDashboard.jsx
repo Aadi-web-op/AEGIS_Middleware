@@ -7,6 +7,7 @@
  *   GET /v1/insights/abstain-topics
  *   GET /v1/insights/decisions-by-decision?decision=ESCALATE
  *   GET /v1/insights/escalation-clusters
+ *   GET /v1/insights/impacted-decisions?source=...&version=...
  *
  * All requests are real API calls. No mock statistics are shown as real data.
  * Each section has loading, empty, error and retry states.
@@ -323,6 +324,110 @@ function EscalationClusters({ onSelectRequestId }) {
   );
 }
 
+// ── 6. Blast-radius impact (Feature #6) ─────────────────────────────────────
+
+function BlastRadius({ onSelectRequestId }) {
+  const [source, setSource] = useState("");
+  const [version, setVersion] = useState("");
+  const [results, setResults] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  async function search(e) {
+    e.preventDefault();
+    if (!source.trim()) return;
+    setLoading(true);
+    setError(null);
+    setResults(null);
+    try {
+      const params = new URLSearchParams({ source: source.trim() });
+      if (version.trim()) params.set("version", version.trim());
+      const r = await fetch(`${API}/v1/insights/impacted-decisions?${params}`);
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({}));
+        throw new Error(body.detail ?? `HTTP ${r.status}`);
+      }
+      setResults(await r.json());
+    } catch (err) {
+      setError(err.message ?? "Unknown error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const rows = results ?? [];
+
+  return (
+    <InsightSection
+      title="Blast-radius impact"
+      icon="💥"
+      desc="When a source document is updated, see which past decisions relied on it and may now be stale."
+      loading={false}
+      error={null}
+      retry={() => {}}
+      empty={false}
+    >
+      <form className="blast-radius-form" onSubmit={search}>
+        <label>
+          Document source
+          <input
+            value={source}
+            onChange={(e) => setSource(e.target.value)}
+            placeholder="e.g. hr-policy.pdf"
+            required
+          />
+        </label>
+        <label>
+          Version (optional)
+          <input
+            value={version}
+            onChange={(e) => setVersion(e.target.value)}
+            placeholder="e.g. 2024.2"
+          />
+        </label>
+        <button type="submit" disabled={loading}>
+          {loading ? "Searching…" : "Find impacted decisions"}
+        </button>
+      </form>
+
+      {error && (
+        <div className="insight-error">
+          <p>{error}</p>
+          <button onClick={(e) => search(e)} className="retry-btn">Retry</button>
+        </div>
+      )}
+
+      {results !== null && rows.length === 0 && !loading && !error && (
+        <p className="muted">No decisions found for this source document.</p>
+      )}
+
+      {rows.length > 0 && (
+        <div>
+          <p className="muted" style={{ marginBottom: 10 }}>
+            {rows.length} decision{rows.length !== 1 ? "s" : ""} relied on this document and may need re-evaluation.
+          </p>
+          {rows.map((r) => (
+            <div key={r.request_id} className="impact-card">
+              <div className="impact-card-info">
+                <div className="truncate" title={r.query}>{r.query || "—"}</div>
+                <div className="ts">{r.timestamp ? r.timestamp.slice(0, 19).replace("T", " ") : ""}</div>
+              </div>
+              <span className="impact-card-decision">{r.decision}</span>
+              <button
+                className="link-btn"
+                onClick={() => onSelectRequestId(r.request_id)}
+                aria-label={`View graph for request ${r.request_id}`}
+              >
+                Graph →
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </InsightSection>
+  );
+}
+
 // ── Main dashboard ──────────────────────────────────────────────────────────
 
 export default function InsightsDashboard({ onNavigateToGraph }) {
@@ -337,6 +442,7 @@ export default function InsightsDashboard({ onNavigateToGraph }) {
         <AbstainTopics />
         <PastEscalations onSelectRequestId={onNavigateToGraph} />
         <EscalationClusters onSelectRequestId={onNavigateToGraph} />
+        <BlastRadius onSelectRequestId={onNavigateToGraph} />
       </div>
     </div>
   );
