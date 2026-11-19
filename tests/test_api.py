@@ -200,3 +200,24 @@ def test_rag_ask_with_provider():
     assert body["decision"] == "ANSWER"
     assert "answerability_score" in body
     assert "signals" in body
+
+
+def test_app_shutdown_closes_async_graph_writer():
+    # Shutdown runs through the lifespan hook (Starlette 1.x has no
+    # add_event_handler); the background graph writer must still be closed.
+    from app.graph.async_sink import AsyncGraphSink
+
+    class _Inner:
+        closed = False
+
+        def write_trace(self, trace):
+            return True
+
+        def close(self):
+            _Inner.closed = True
+
+    writer = AsyncGraphSink(_Inner())
+    evaluator = Evaluator([FixedSignal("relevance", 0.9)])
+    with TestClient(create_app(evaluator, graph_sink=writer)) as client:
+        assert client.get("/v1/health").status_code == 200
+    assert _Inner.closed

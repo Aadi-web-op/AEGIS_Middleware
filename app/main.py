@@ -1,5 +1,7 @@
 import logging
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -60,11 +62,20 @@ def create_app(
     audit_logger: AuditLogger | None = None,
     escalation_queue: EscalationQueue | None = None,
 ) -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # Lifespan, not add_event_handler/on_event: Starlette 1.x removed those.
+        yield
+        writer = getattr(app.state.evaluator, "graph_sink", None)
+        if isinstance(writer, AsyncGraphSink):
+            writer.close(timeout=5.0)
+
     app = FastAPI(
         title="Aegis",
         version=API_VERSION,
         description="Uncertainty middleware: decides whether an AI answer should be "
         "returned, caveated, escalated or withheld.",
+        lifespan=lifespan,
     )
 
     driver = neo4j_driver if neo4j_driver is not None else _init_neo4j_driver()
@@ -80,13 +91,6 @@ def create_app(
         evaluator.graph_sink = graph_sink
     elif driver is not None and getattr(evaluator, "graph_sink", None) is None:
         evaluator.graph_sink = AsyncGraphSink(Neo4jGraphSink(driver))
-
-    def _close_graph_writer() -> None:
-        writer = getattr(app.state.evaluator, "graph_sink", None)
-        if isinstance(writer, AsyncGraphSink):
-            writer.close(timeout=5.0)
-
-    app.add_event_handler("shutdown", _close_graph_writer)
 
     app.state.evaluator = evaluator
     app.state.audit_logger = audit_logger if audit_logger is not None else AuditLogger()
