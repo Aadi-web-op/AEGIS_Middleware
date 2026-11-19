@@ -5,6 +5,7 @@ import yaml
 from pydantic import BaseModel, model_validator
 
 from app.core.scoring import ScoringWeights
+from app.schemas import Decision
 
 
 class UnknownProfileError(ValueError):
@@ -31,10 +32,33 @@ class Vetoes(BaseModel):
     escalate_above_ambiguity: float
 
 
+class ClaimVetoes(BaseModel):
+    """Claim-level rules. They act on individual claims, not on the average.
+
+    A claim is *grounded* when at least `min_grounding` of its content words
+    appear in one evidence passage: the documents talk about it even though
+    the entailment model could not confirm it. An *ungrounded* unsupported
+    claim is one the documents do not mention at all.
+    """
+
+    # Least cautious decision allowed when any claim is not SUPPORTED.
+    unsupported_floor: Decision = Decision.CAVEAT
+    # Least cautious decision allowed when any claim is CONTRADICTED.
+    contradicted_floor: Decision = Decision.ESCALATE
+    # ESCALATE when at least this share of the claims is unsupported and
+    # ungrounded. None disables the rule.
+    escalate_at_ungrounded_fraction: float | None = None
+    # ABSTAIN when no claim is supported and none is even grounded: the
+    # documents do not contain what the answer says.
+    abstain_when_none_supported: bool = True
+    min_grounding: float = 0.5
+
+
 class ProfileConfig(BaseModel):
     description: str = ""
     thresholds: Thresholds
     vetoes: Vetoes
+    claims: ClaimVetoes = ClaimVetoes()
     answer_min_signal: float | None = None
 
 

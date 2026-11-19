@@ -45,6 +45,18 @@ FOR (d:Document) ON (d.version);
 CREATE INDEX reason_code IF NOT EXISTS
 FOR (r:Reason) ON (r.code);
 
+// Newest-first decision lists and time-ordered stale-usage queries
+CREATE INDEX decision_created_at IF NOT EXISTS
+FOR (d:Decision) ON (d.created_at);
+
+// Knowledge-gap grouping by the deterministic topic key (app.graph.topics)
+CREATE INDEX decision_topic IF NOT EXISTS
+FOR (d:Decision) ON (d.topic);
+
+// Evidence by source (per-document evidence lookups)
+CREATE INDEX evidence_source IF NOT EXISTS
+FOR (e:Evidence) ON (e.source);
+
 // Conflict kind lookup on CONFLICTS_WITH edges (numeric, date, statement, version)
 CREATE INDEX conflicts_with_kind IF NOT EXISTS
 FOR ()-[r:CONFLICTS_WITH]-() ON (r.kind);

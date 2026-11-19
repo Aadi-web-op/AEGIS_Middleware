@@ -29,7 +29,9 @@ from app.graph.schema import (
     INDEXES,
     apply_schema,
 )
+from app.graph.async_sink import AsyncGraphSink
 from app.graph.sink import GraphSink, NullGraphSink, safe_write_trace
+from app.graph.topics import topic_key
 
 __all__ = [
     "CONFLICT_KINDS",
@@ -41,6 +43,8 @@ __all__ = [
     "GraphSink",
     "NullGraphSink",
     "safe_write_trace",
+    "AsyncGraphSink",
+    "topic_key",
     "apply_schema",
     "ALL_SCHEMA_STATEMENTS",
     "CONSTRAINTS",

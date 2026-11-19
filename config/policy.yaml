@@ -21,6 +21,13 @@ profiles:
       escalate_below_support: 0.30
       caveat_below_freshness: 0.30
       escalate_above_ambiguity: 0.50
+    # Claim-level rules (see app/core/config.py: ClaimVetoes).
+    claims:
+      unsupported_floor: CAVEAT
+      contradicted_floor: ESCALATE
+      escalate_at_ungrounded_fraction: null
+      abstain_when_none_supported: true
+      min_grounding: 0.5
 
   standard:
     description: General organisational assistant
@@ -34,6 +41,12 @@ profiles:
       escalate_below_support: 0.40
       caveat_below_freshness: 0.40
       escalate_above_ambiguity: 0.30
+    claims:
+      unsupported_floor: CAVEAT
+      contradicted_floor: ESCALATE
+      escalate_at_ungrounded_fraction: 0.75
+      abstain_when_none_supported: true
+      min_grounding: 0.5
 
   strict:
     description: Medical, legal, finance, compliance
@@ -47,5 +60,11 @@ profiles:
       escalate_below_support: 0.50
       caveat_below_freshness: 0.50
       escalate_above_ambiguity: 0.30
+    claims:
+      unsupported_floor: ESCALATE
+      contradicted_floor: ESCALATE
+      escalate_at_ungrounded_fraction: 0.5
+      abstain_when_none_supported: true
+      min_grounding: 0.5
     answer_min_signal: 0.60
     

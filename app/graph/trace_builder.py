@@ -1,17 +1,21 @@
-"""PROPOSAL -- maps evidence-signal details onto the decision-graph trace.
+"""Maps evidence-signal details onto the decision-graph trace.
 
-**This file is a proposal, not an agreed interface.** Aaradhya owns the
-trace contract and the central integration (team brief, section 10). No
-trace contract exists in the repository yet, so this builder exists to
-(a) show concretely how the enriched entailment and contradiction details
-map onto the documented node and relationship vocabulary, (b) give the
-graph writer and its tests a real trace to consume, and (c) let the
-trace-construction step be timed. It is deliberately **not** wired into
-`app.core.evaluator`, and it changes no shared schema.
+**This module is live.** `app.core.evaluator` imports `build_trace` and
+calls it on every evaluation; the result is returned as the `trace` field
+of `EvaluateResponse` and handed to the graph sink via
+`app.graph.sink.safe_write_trace`. It is what the frontend's Decision
+Graph and the Neo4j writer both consume.
 
-Three things in here need Aaradhya's and Shatakshi's sign-off before any
-of it becomes the real contract; they are flagged inline as
-`NEEDS APPROVAL`.
+It maps the enriched entailment and contradiction details onto the node
+and relationship vocabulary in `app.graph.contract`, and it never raises
+into the decision path: the evaluator wraps the call, and a failure here
+costs the trace, not the decision.
+
+Three design choices in here were originally flagged for team sign-off
+and are now load-bearing, because the Neo4j insight queries and the
+frontend both depend on them. They are documented inline as
+`DESIGN NOTE` so the reasoning is not lost; changing any of them is a
+breaking change to the trace contract.
 """
 
 from __future__ import annotations
@@ -21,11 +25,17 @@ import logging
 import re
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-from app.graph.contract import EVIDENCE_PREVIEW_CHARS, truncate_preview
+from app.graph.contract import (
+    EVIDENCE_PREVIEW_CHARS,
+    QUERY_PREVIEW_CHARS,
+    TRACE_VERSION,
+    truncate_preview,
+)
+from app.graph.topics import topic_key
 
 logger = logging.getLogger(__name__)
 
-# NEEDS APPROVAL (1) -- node identity.
+# DESIGN NOTE (1) -- node identity.
 #
 # A Decision is identified by request_id, which the brief fixes. For the
 # rest, Claim and Evidence ids are scoped to the request, while a Document
@@ -43,7 +53,7 @@ _REASON_ID = "{request_id}:reason:{index}"
 _DOCUMENT_ID = "doc:{source}"
 _DOCUMENT_ID_VERSIONED = "doc:{source}@{version}"
 
-# NEEDS APPROVAL (2) -- reason attribution.
+# DESIGN NOTE (2) -- reason attribution.
 #
 # The documented ABOUT relationship needs to know which claim or evidence
 # a reason is about, and a `{code, message}` reason does not carry that.
@@ -110,6 +120,46 @@ def _supersedes_order(
     return None
 
 
+def document_sort_keys(meta: Mapping[str, Any]) -> Dict[str, Any]:
+    """Sort keys stored on a Document so Cypher can order versions.
+
+    `date_key` is the ISO day and `version_key` the numeric parts of the
+    version label -- exactly what `_supersedes_order` compares, so the
+    cross-trace linking statement in the writer and the within-trace
+    ordering here cannot disagree. A key that cannot be derived is left
+    out rather than guessed.
+    """
+    keys: Dict[str, Any] = {}
+    day = _as_date(meta.get("date"))
+    if day is not None:
+        keys["date_key"] = day.isoformat()[:10]
+    version_key = _version_sort_key(meta.get("version"))
+    if version_key:
+        keys["version_key"] = list(version_key)
+    return keys
+
+
+def utc_now_iso() -> str:
+    """Current time as an ISO-8601 UTC string, for a Decision's `created_at`."""
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds")
+
+
+def query_preview(query: Any) -> Optional[str]:
+    """Secret-redacted, whitespace-collapsed, capped preview of a query."""
+    if not isinstance(query, str) or not query.strip():
+        return None
+    try:
+        # Imported lazily: app.audit pulls in the API schemas and routes.
+        from app.audit.logger import sanitize_secrets
+
+        cleaned = sanitize_secrets(query) or ""
+    except Exception:
+        # Never store a query we could not redact.
+        logger.exception("Could not sanitise a query preview; omitting it")
+        return None
+    return truncate_preview(cleaned, QUERY_PREVIEW_CHARS) or None
+
+
 def build_trace(
     *,
     request_id: str,
@@ -122,6 +172,9 @@ def build_trace(
     answerability_score: Optional[float] = None,
     policy_version: Optional[str] = None,
     profile: Optional[str] = None,
+    query: Optional[str] = None,
+    created_at: Optional[str] = None,
+    degraded: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Build a decision-graph trace from one evaluation's signal details.
 
@@ -134,6 +187,11 @@ def build_trace(
     SUPPORTED_BY or CONTRADICTED_BY edge only for an index the entailment
     signal actually listed, and a CONFLICTS_WITH edge is drawn only for a
     conflict the contradiction signal marked `graph_edge_eligible`.
+
+    `query` is never stored whole: the Decision carries a redacted
+    `query_preview` (<=160 chars) and a `topic` keyword key derived from
+    it. `created_at` is an ISO-8601 UTC timestamp supplied by the caller,
+    which keeps this function deterministic.
     """
     nodes: List[Dict[str, Any]] = []
     edges: List[Dict[str, Any]] = []
@@ -152,6 +210,17 @@ def build_trace(
         decision_node["policy_version"] = policy_version
     if profile is not None:
         decision_node["profile"] = profile
+    if created_at is not None:
+        decision_node["created_at"] = str(created_at)
+    preview = query_preview(query)
+    if preview:
+        decision_node["query_preview"] = preview
+    topic = topic_key(query)
+    if topic:
+        decision_node["topic"] = topic
+    if degraded is not None:
+        decision_node["degraded"] = bool(degraded)
+    decision_node["trace_version"] = TRACE_VERSION
     nodes.append(decision_node)
 
     # --- Evidence and Document -------------------------------------------
@@ -199,6 +268,17 @@ def build_trace(
                 "date": str(item["date"]) if item.get("date") else None,
             }
         )
+        # Every passage the decision considered, cited or not. Without this
+        # an uncited passage is only reachable through its Document, and
+        # "which decisions retrieved this document?" cannot be answered.
+        edges.append(
+            {
+                "type": "RETRIEVED",
+                "from": request_id,
+                "to": evidence_id,
+                "evidence_index": index,
+            }
+        )
 
         document_id = _document_id(source, version)
         if document_id:
@@ -211,6 +291,7 @@ def build_trace(
                         "source": source,
                         "version": version,
                         "date": str(item["date"]) if item.get("date") else None,
+                        **document_sort_keys(item),
                     }
                 )
             edges.append({"type": "FROM", "from": evidence_id, "to": document_id})
@@ -268,6 +349,16 @@ def build_trace(
 
     # --- CONFLICTS_WITH and SUPERSEDES -----------------------------------
     conflicted_evidence: List[int] = []
+    supersedes_seen: set[Tuple[str, str]] = set()
+
+    def _add_supersedes(newer_id: str, older_id: str, derived: str) -> None:
+        if (newer_id, older_id) in supersedes_seen or (older_id, newer_id) in supersedes_seen:
+            return
+        supersedes_seen.add((newer_id, older_id))
+        edges.append(
+            {"type": "SUPERSEDES", "from": newer_id, "to": older_id, "derived": derived}
+        )
+
     conflicts = (contradiction_details or {}).get("conflicts") or []
     for conflict in conflicts:
         if not isinstance(conflict, Mapping):
@@ -310,13 +401,28 @@ def build_trace(
             )
             continue
         newer, older = order
-        edges.append(
-            {
-                "type": "SUPERSEDES",
-                "from": (doc_a, doc_b)[newer],
-                "to": (doc_a, doc_b)[older],
-            }
-        )
+        _add_supersedes((doc_a, doc_b)[newer], (doc_a, doc_b)[older], "version_conflict")
+
+    # Same-source documents with a comparable date/version supersede one
+    # another whether or not the contradiction signal flagged them: two
+    # versions of one policy in the same retrieval is a fact about the
+    # documents, not about this answer. (The writer applies the same rule
+    # across traces.) An order that cannot be established draws no edge.
+    by_document: Dict[str, Mapping[str, Any]] = {}
+    for index in sorted(document_ids):
+        by_document.setdefault(document_ids[index], evidence_meta[index])
+    document_list = list(by_document.items())
+    for position, (doc_a, meta_a) in enumerate(document_list):
+        for doc_b, meta_b in document_list[position + 1:]:
+            if not meta_a.get("source") or meta_a.get("source") != meta_b.get("source"):
+                continue
+            order = _supersedes_order(meta_a, meta_b)
+            if order is None:
+                continue
+            newer, older = order
+            _add_supersedes(
+                (doc_a, doc_b)[newer], (doc_a, doc_b)[older], "same_source_order"
+            )
 
     # --- Reason, BECAUSE, ABOUT ------------------------------------------
     unsupported_claims = [
@@ -353,7 +459,7 @@ def build_trace(
                     }
                 )
 
-    # NEEDS APPROVAL (3) -- `headline`.
+    # DESIGN NOTE (3) -- `headline`.
     #
     # The brief lists `headline` on the trace, and section 10 gives the
     # explanation templates to Aaradhya. This builder passes a headline
@@ -363,6 +469,7 @@ def build_trace(
         "request_id": request_id,
         "decision": decision,
         "headline": headline,
+        "trace_version": TRACE_VERSION,
         "nodes": nodes,
         "edges": edges,
         "reasons": reason_payload,

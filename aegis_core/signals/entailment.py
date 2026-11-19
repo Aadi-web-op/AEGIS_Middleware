@@ -15,7 +15,9 @@ from typing import List, Dict, Any, Optional, Tuple
 
 from aegis_core.signals.base import BaseSignal, SignalResult, SignalName
 from aegis_core.models.nli import NLIRunner
+from aegis_core.models.nli import NLIPrediction
 from aegis_core.models.registry import NLI_CANDIDATES
+from aegis_core.utils.claim_split import decompose_sentence, grounding
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +65,19 @@ class ClaimResult:
     contradicting_evidence_indices: List[int] = field(default_factory=list)
     reasons: List[str] = field(default_factory=list)
     nli_available: bool = False
+    # --- atomic-claim detail (additive) ---
+    # The answer sentence this claim came from, and whether it is a part of
+    # that sentence rather than the sentence itself.
+    source_sentence: Optional[str] = None
+    decomposed: bool = False
+    # Raw model probabilities for the deciding passage. `score` keeps its
+    # legacy meaning; these say what the model actually measured.
+    entailment_probability: float = 0.0
+    contradiction_probability: float = 0.0
+    # Share of the claim's content words present in its best passage.
+    # Not a support judgement: it separates "discussed but unconfirmed"
+    # from "not mentioned at all".
+    grounding: float = 0.0
 
     @property
     def status(self) -> str:
@@ -93,6 +108,11 @@ class ClaimResult:
             "evidence_indices": self.evidence_indices,
             "reasons": list(self.reasons),
             "nli_available": self.nli_available,
+            "source_sentence": self.source_sentence or self.claim,
+            "decomposed": self.decomposed,
+            "entailment_probability": round(self.entailment_probability, 4),
+            "contradiction_probability": round(self.contradiction_probability, 4),
+            "grounding": round(self.grounding, 4),
         }
 
 
@@ -192,6 +212,10 @@ class EntailmentSignal(BaseSignal):
         evidence = evidence[: self.max_evidence_per_claim]
 
         claim_results = self._verify_claims(claims, evidence)
+        claim_results, claims_truncated = self._refine_with_atomic_claims(
+            claim_results, evidence
+        )
+        nli_available = any(cr.nli_available for cr in claim_results)
         support_score = self._aggregate_support(claim_results)
         reasons = self._generate_reasons(claim_results, support_score)
 
@@ -211,21 +235,102 @@ class EntailmentSignal(BaseSignal):
                 "evidence_supplied": supplied_count,
                 "evidence_truncated": supplied_count > len(evidence),
                 "evidence_index_base": 0,
+                # False when the NLI model produced no prediction at all, so
+                # the value above is a placeholder, not a measurement.
+                "nli_available": nli_available,
+                "sentence_count": len(claims),
+                "claims_truncated": claims_truncated,
             },
         )
 
     # ------------------------------------------------------------------
+    def _refine_with_atomic_claims(
+        self, sentence_results: List["ClaimResult"], evidence: List[str]
+    ) -> Tuple[List["ClaimResult"], bool]:
+        """Re-verify the parts of every sentence the model could not confirm.
+
+        A sentence that is entailed (or contradicted) as a whole is kept as
+        one claim. A NEUTRAL sentence is decomposed into atomic claims and
+        each atom is verified on its own, so "A and B" with only A in the
+        evidence becomes one SUPPORTED and one UNSUPPORTED claim instead of
+        a single opaque UNSUPPORTED sentence.
+        """
+        plan: List[Tuple[int, Any]] = []  # (sentence position, AtomicClaim)
+        for pos, cr in enumerate(sentence_results):
+            if cr.label != "NEUTRAL" or not cr.nli_available:
+                continue
+            atoms = decompose_sentence(cr.claim)
+            if len(atoms) == 1 and atoms[0].text == cr.claim:
+                continue
+            for atom in atoms:
+                plan.append((pos, atom))
+
+        replaced: Dict[int, List[ClaimResult]] = {}
+        if plan:
+            hypotheses: List[str] = []
+            for _pos, atom in plan:
+                hypotheses.extend(atom.candidates)
+            verified = self._verify_claims(hypotheses, evidence)
+            cursor = 0
+            for pos, atom in plan:
+                options = verified[cursor: cursor + len(atom.candidates)]
+                cursor += len(atom.candidates)
+                # Keep the best-supported wording; otherwise the first
+                # (most specific) candidate.
+                best = max(options, key=lambda r: r.entailment_probability)
+                if best.label != "ENTAILMENT":
+                    best = options[0]
+                best.source_sentence = sentence_results[pos].claim
+                best.decomposed = True
+                replaced.setdefault(pos, []).append(best)
+
+        out: List[ClaimResult] = []
+        for pos, cr in enumerate(sentence_results):
+            out.extend(replaced.get(pos, [cr]))
+
+        truncated = len(out) > self.max_claims
+        out = out[: self.max_claims]
+        for index, cr in enumerate(out):
+            cr.claim_index = index
+        return out, truncated
+
+    # Passages longer than this many words are verified window by window,
+    # because the NLI model truncates its input (see models/nli.py).
+    _WINDOW_WORDS = 120
+    _MAX_WINDOWS = 12
+
+    def _premise_units(self, passage: str) -> List[str]:
+        words = passage.split()
+        if len(words) <= self._WINDOW_WORDS:
+            return [passage]
+        sentences = [x for x in re.split(r"(?<=[.!?])\s+", passage.strip()) if x]
+        units: List[str] = []
+        current: List[str] = []
+        count = 0
+        for sentence in sentences:
+            n = len(sentence.split())
+            if current and count + n > self._WINDOW_WORDS:
+                units.append(" ".join(current))
+                current, count = [], 0
+            current.append(sentence)
+            count += n
+        if current:
+            units.append(" ".join(current))
+        return units[: self._MAX_WINDOWS] or [passage]
+
     def _verify_claims(
         self, claims: List[str], evidence: List[str]
     ) -> List[ClaimResult]:
         """Run one batched NLI pass over all claim/evidence pairs."""
+        units_per_evidence = [self._premise_units(ev) for ev in evidence]
         pairs: List[Tuple[int, int]] = []
+        nli_pairs: List[Tuple[str, str]] = []
         for ci, claim in enumerate(claims):
-            for ei, ev in enumerate(evidence):
-                pairs.append((ci, ei))
-
-        # premise = evidence, hypothesis = claim
-        nli_pairs = [(evidence[ei], claims[ci]) for ci, ei in pairs]
+            for ei, units in enumerate(units_per_evidence):
+                for unit in units:
+                    pairs.append((ci, ei))
+                    # premise = evidence, hypothesis = claim
+                    nli_pairs.append((unit, claim))
 
         try:
             preds = self.nli.infer_batch(nli_pairs)
@@ -233,13 +338,28 @@ class EntailmentSignal(BaseSignal):
             logger.warning("NLI inference failed: %s", exc)
             preds = None
 
-        # Organise predictions per claim.
+        # Organise predictions per claim. A long passage contributes several
+        # windows; the passage's prediction is the strongest finding of any
+        # window.
         per_claim: List[List[Optional[Any]]] = [
             [None] * len(evidence) for _ in claims
         ]
-        if preds:
+        if preds and len(preds) == len(pairs):
             for (ci, ei), pred in zip(pairs, preds):
-                per_claim[ci][ei] = pred
+                current = per_claim[ci][ei]
+                if current is None:
+                    per_claim[ci][ei] = pred
+                else:
+                    ent = max(current.entailment, pred.entailment)
+                    con = max(current.contradiction, pred.contradiction)
+                    neu = min(current.neutral, pred.neutral)
+                    label = max(
+                        (("entailment", ent), ("contradiction", con), ("neutral", neu)),
+                        key=lambda item: item[1],
+                    )[0]
+                    per_claim[ci][ei] = NLIPrediction(
+                        entailment=ent, contradiction=con, neutral=neu, label=label
+                    )
 
         results: List[ClaimResult] = []
         for ci, claim in enumerate(claims):
@@ -332,6 +452,10 @@ class EntailmentSignal(BaseSignal):
                 contradicting_indices, nli_available,
             ),
             nli_available=nli_available,
+            source_sentence=claim,
+            entailment_probability=best_entailment,
+            contradiction_probability=best_contradiction,
+            grounding=grounding(claim, evidence),
         )
 
     def _claim_reasons(
