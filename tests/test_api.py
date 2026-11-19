@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from app.core.evaluator import Evaluator
 from app.evidence.stubs import FixedSignal
+from app.audit import AuditLogger
 from app.main import create_app
 
 PAYLOAD = {
@@ -134,12 +135,18 @@ def test_evaluate_returns_trace_and_headline():
     assert any(n["type"] == "Evidence" for n in trace["nodes"])
 
 
-def test_insights_without_neo4j_returns_503():
+def test_insights_without_neo4j_fall_back_to_audit_log(tmp_path):
+    # The insights router answers these aliases from the SQLite audit log
+    # when Neo4j is offline; only the graph-only escalation view is 503.
     client = client_with()
-    assert client.get("/v1/insights/conflicts").status_code == 503
-    assert client.get("/v1/insights/outdated").status_code == 503
-    assert client.get("/v1/insights/abstains").status_code == 503
-    assert client.get("/v1/insights/impact?source=policy.pdf").status_code == 503
+    db_path = str(tmp_path / "audit.db")
+    AuditLogger(db_path)  # creates an empty audit schema
+    client.app.state.audit_db_path = db_path
+    for path in ("conflicts", "outdated", "abstains"):
+        r = client.get(f"/v1/insights/{path}")
+        assert r.status_code == 200
+        assert r.json() == []
+    assert client.get("/v1/insights/impact?source=policy.pdf").status_code == 200
     assert client.get("/v1/insights/escalations").status_code == 503
 
 
