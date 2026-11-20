@@ -127,6 +127,33 @@ class PolicyExplanation(BaseModel):
     minimum_change: SignalChange | None = None
 
 
+class HighlightSpan(BaseModel):
+    """A sentence inside one evidence passage, tied to the claim it bears on."""
+    start: int = Field(ge=0)
+    end: int = Field(ge=0)
+    kind: str  # "support" | "conflict"
+    claim_index: int
+    overlap: float = Field(ge=0.0, le=1.0)
+
+
+class NumberMark(BaseModel):
+    """A number in the evidence that disagrees with the claim (12 vs 18)."""
+    start: int = Field(ge=0)
+    end: int = Field(ge=0)
+    value: str
+    claim_value: str
+    claim_index: int
+
+
+class EvidenceHighlight(BaseModel):
+    evidence_index: int
+    source: str | None = None
+    version: str | None = None
+    text: str
+    spans: list[HighlightSpan] = Field(default_factory=list)
+    numbers: list[NumberMark] = Field(default_factory=list)
+
+
 class EvaluateResponse(BaseModel):
     request_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     decision: Decision
@@ -152,3 +179,5 @@ class EvaluateResponse(BaseModel):
     # Counterfactual for ESCALATE: smallest single-signal change that flips
     # the decision, computed by replaying the policy (app/core/explainer.py).
     counterfactual: PolicyExplanation | None = None
+    # Sentence-level support/conflict spans per passage (app/evidence/highlight.py).
+    highlights: list[EvidenceHighlight] = Field(default_factory=list)

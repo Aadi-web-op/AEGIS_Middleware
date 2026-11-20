@@ -14,6 +14,7 @@ from app.core.config import UnknownProfileError
 from app.core.evaluator import Evaluator
 from app.core.explainer import explain_escalation
 from app.escalation import EscalationQueue, escalation_router
+from app.evidence.highlight import build_highlights
 from app.evidence.registry import default_signals
 from app.graph.insights import (
     conflicting_document_pairs,
@@ -106,6 +107,10 @@ def create_app(
             response.counterfactual = explain_escalation(payload, response, app.state.evaluator.config)
         except Exception:
             logger.exception("Could not explain decision %s", response.request_id)
+        try:
+            response.highlights = build_highlights(payload, response)
+        except Exception:
+            logger.exception("Could not highlight evidence for %s", response.request_id)
         if response.trace is not None:
             try:
                 app.state.graph_events.publish(response.trace)

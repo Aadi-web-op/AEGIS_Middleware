@@ -7,6 +7,9 @@ import { Input } from "@/components/ui/input";
 import { apiRequest, evaluationPayload, score, type EvaluationResult } from "@/lib/aegis-api";
 import { useService } from "./service";
 import { ConnectionNotice, EmptyState, Footer, PageHeader, SectionHeading } from "./console";
+import { AnswerabilityBand, AuditorExport, EvidenceHighlights, WhyPanel } from "./decision-insight";
+// Lower is better for these two, so a full bar is a warning, not a pass.
+const INVERTED_SIGNALS = new Set(["contradiction", "ambiguity"]);
 export function Evaluation() {
   const { base, connected, result, setResult } = useService();
   const [mode, setMode] = useState<"manual" | "rag">("manual");
@@ -168,21 +171,29 @@ export function Evaluation() {
                   <strong>{score(result.answerability_score)}</strong>
                 </div>
               </div>
+              {result.headline && <p className="result-headline">{result.headline}</p>}
+              <AnswerabilityBand value={result.answerability_score} />
               {result.caveat_text && <p className="result-copy">{result.caveat_text}</p>}
               {result.clarifying_question && (
                 <p className="result-copy">{result.clarifying_question}</p>
               )}
-              <div className="result-reasons">
-                {result.reasons.map((reason, i) => (
-                  <p key={i}>
-                    <span className="font-mono text-[10px] text-muted-foreground">
-                      {reason.code}
-                    </span>
-                    <br />
-                    {reason.message}
-                  </p>
-                ))}
-              </div>
+              <WhyPanel result={result} />
+              <details className="result-reasons-raw">
+                <summary className="minor-label">
+                  All policy reasons ({result.reasons.length})
+                </summary>
+                <div className="result-reasons">
+                  {result.reasons.map((reason, i) => (
+                    <p key={i}>
+                      <span className="font-mono text-[10px] text-muted-foreground">
+                        {reason.code}
+                      </span>
+                      <br />
+                      {reason.message}
+                    </p>
+                  ))}
+                </div>
+              </details>
             </>
           ) : (
             <EmptyState
@@ -200,15 +211,31 @@ export function Evaluation() {
               "Freshness",
               "Completeness",
               "Ambiguity",
-            ].map((signal) => (
-              <div key={signal}>
-                <div className="signal-label">
-                  <span>{signal}</span>
-                  <span>{score(result?.signals[signal.toLowerCase()])}</span>
+            ].map((signal) => {
+              const key = signal.toLowerCase();
+              const value = result?.signals[key];
+              const inverted = INVERTED_SIGNALS.has(key);
+              const good = typeof value === "number" && (inverted ? value < 0.5 : value >= 0.5);
+              return (
+                <div key={signal}>
+                  <div className="signal-label">
+                    <span>
+                      {signal}
+                      {inverted ? " (lower is better)" : ""}
+                    </span>
+                    <span>{score(value)}</span>
+                  </div>
+                  <div className="signal-track">
+                    {typeof value === "number" && (
+                      <div
+                        className={`signal-fill ${good ? "signal-good" : "signal-bad"}`}
+                        style={{ width: `${Math.round(value * 100)}%` }}
+                      />
+                    )}
+                  </div>
                 </div>
-                <div className="signal-track" />
-              </div>
-            ))}
+              );
+            })}
           </div>
           {result && (
             <>
@@ -234,6 +261,8 @@ export function Evaluation() {
                   <p className="minor-label mt-3">No individual claims returned.</p>
                 )}
               </section>
+              <EvidenceHighlights result={result} />
+              <AuditorExport requestId={result.request_id} />
               <div className="panel-foot mt-6">
                 <span>Policy {result.policy_version}</span>
                 <span>

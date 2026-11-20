@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Input } from "@/components/ui/input";
 import {
@@ -6,13 +6,14 @@ import {
   canTransition,
   apiUrl,
   display,
+  graphLabel,
   score,
   decisions,
   statusValues,
   type RecordData,
 } from "@/lib/aegis-api";
 import { useRecords, useService } from "./service";
-import { IngestDocument } from "./ingest";
+import { ImpactLookup, IngestDocument } from "./ingest";
 import { Briefing } from "./briefing";
 export { Evaluation } from "./evaluation";
 const TraceGraph = lazy(() =>
@@ -57,7 +58,7 @@ import {
 export function Overview() {
   const [period, setPeriod] = useState("Last 7 days");
   const findings = useRecords("/v1/insights/conflicting-document-pairs?limit=5");
-  const { base, connected } = useService();
+  const { base, connected, graph } = useService();
   const recent = useQuery({
     queryKey: ["aegis", base, "recent"],
     queryFn: async () =>
@@ -79,7 +80,12 @@ export function Overview() {
   });
   const metrics = [
     { label: "Requests logged", context: "All evaluation requests", icon: Layers },
-    { label: "Decisions in graph", context: "Persisted to Neo4j", icon: Network },
+    {
+      label: "Decisions in graph",
+      context: "Persisted to Neo4j",
+      icon: Network,
+      value: graph?.connected ? graph.counts["Decision"] : undefined,
+    },
     { label: "Escalation rate", context: "Decisions requiring human review", icon: ArrowUpRight },
     { label: "Abstention rate", context: "Decisions with insufficient evidence", icon: Minus },
   ];
@@ -105,7 +111,9 @@ export function Overview() {
               <span>{metric.label}</span>
               <metric.icon />
             </div>
-            <div className="metric-value">—</div>
+            <div className="metric-value">
+              {"value" in metric && metric.value !== undefined ? metric.value : "—"}
+            </div>
             <div className="metric-context">{metric.context}</div>
           </div>
         ))}
@@ -255,7 +263,7 @@ export function Overview() {
         <span>
           <Database size={12} />
           Neo4j <span className="status-dot" />
-          Health not reported
+          {graphLabel(graph)}
         </span>
         <span>
           <TriangleAlert size={12} />
@@ -589,7 +597,12 @@ export function DataWorkspace({ kind }: { kind: TableKind }) {
           </Button>
         </div>
       </div>
-      {kind === "documents" && <IngestDocument />}
+      {kind === "documents" && (
+        <>
+          <IngestDocument />
+          <ImpactLookup />
+        </>
+      )}
       {selected && (
         <section className="section mt-7">
           <SectionHeading title="Record details">
@@ -633,23 +646,34 @@ export function DataWorkspace({ kind }: { kind: TableKind }) {
 export function Graph() {
   const [search, setSearch] = useState("");
   const [type, setType] = useState("All node types");
-  const { result } = useService();
+  const { result, graph } = useService();
+  const graphUp = Boolean(graph?.connected);
+  const live = useLiveGraph();
+  const trace = live.enabled ? live.trace : result?.trace;
   const nodes =
-    result?.trace?.nodes?.filter(
+    trace?.nodes?.filter(
       (n) =>
         (type === "All node types" || n["type"] === type) &&
         display(n).toLowerCase().includes(search.toLowerCase()),
     ) ?? [];
-  const edges = result?.trace?.edges ?? [];
+  const edges = trace?.edges ?? [];
   return (
     <main className="content">
       <PageHeader
         title="Graph explorer"
         description="Trace decisions to claims, evidence, and the documents behind them."
       >
+        <Button
+          size="sm"
+          variant={live.enabled ? "secondary" : "outline"}
+          onClick={() => live.setEnabled(!live.enabled)}
+          title="Stream new decisions into the graph as they are evaluated"
+        >
+          {live.enabled ? `● Live · ${live.count} decision(s)` : "Go live"}
+        </Button>
         <span className="status-badge">
           <Database size={12} />
-          {result?.trace ? "Evaluation trace" : "No trace available"}
+          {live.enabled ? live.status : result?.trace ? "Evaluation trace" : "No trace available"}
         </span>
       </PageHeader>
       <ConnectionNotice />
@@ -699,9 +723,13 @@ export function Graph() {
             <div className="graph-canvas">
               <EmptyState
                 icon={Network}
-                title="Your evidence graph is not connected"
-                description="Actual Neo4j nodes and relationships will appear here once graph connectivity is available."
-                link
+                title={graphUp ? "No trace loaded" : "Your evidence graph is not connected"}
+                description={
+                  graphUp
+                    ? "Neo4j is connected. Run a live evaluation, or press Go live to stream new decisions into this view."
+                    : "Actual Neo4j nodes and relationships will appear here once graph connectivity is available."
+                }
+                link={!graphUp}
               />
               <div className="graph-controls">
                 <Button variant="outline" size="icon" disabled title="Zoom in">
@@ -720,7 +748,11 @@ export function Graph() {
               <p>No node selected.</p>
               <div className="section mt-6">
                 <h3>Relationships</h3>
-                <p>Relationship data is unavailable until Neo4j is connected.</p>
+                <p>
+                  {graphUp
+                    ? "Select a node to see its relationships."
+                    : "Relationship data is unavailable until Neo4j is connected."}
+                </p>
               </div>
             </aside>
           </div>
@@ -730,8 +762,55 @@ export function Graph() {
     </main>
   );
 }
+type Trace = { nodes: RecordData[]; edges: RecordData[] };
+/** Finale feature 6: new decisions stream in over SSE (/v1/graph/events). */
+function useLiveGraph() {
+  const { base } = useService();
+  const [enabled, setEnabled] = useState(false);
+  const [trace, setTrace] = useState<Trace>({ nodes: [], edges: [] });
+  const [count, setCount] = useState(0);
+  const [status, setStatus] = useState("Connecting…");
+  useEffect(() => {
+    if (!enabled || !base) return;
+    const source = new EventSource(`${base}/v1/graph/events`);
+    source.onopen = () => setStatus("Live: waiting for decisions");
+    source.onerror = () => setStatus("Live stream reconnecting…");
+    source.addEventListener("decision", (event) => {
+      try {
+        const incoming = JSON.parse((event as MessageEvent).data) as Partial<Trace>;
+        setTrace((current) => {
+          const ids = new Set(current.nodes.map((n) => display(n["id"])));
+          const edgeKey = (e: RecordData) =>
+            `${display(e["type"])}|${display(e["from"])}|${display(e["to"])}`;
+          const edgeKeys = new Set(current.edges.map(edgeKey));
+          return {
+            nodes: [
+              ...current.nodes,
+              ...(incoming.nodes ?? []).filter((n) => !ids.has(display(n["id"]))),
+            ].slice(-400),
+            edges: [
+              ...current.edges,
+              ...(incoming.edges ?? []).filter((e) => !edgeKeys.has(edgeKey(e))),
+            ].slice(-800),
+          };
+        });
+        setCount((c) => c + 1);
+        setStatus("Live: streaming");
+      } catch {
+        /* a malformed event costs that event, not the stream */
+      }
+    });
+    source.addEventListener("reset", () => {
+      setTrace({ nodes: [], edges: [] });
+      setCount(0);
+    });
+    return () => source.close();
+  }, [enabled, base]);
+  return { enabled, setEnabled, trace, count, status };
+}
 export function System() {
-  const { base, setBase, connected, health, error, checking } = useService();
+  const { base, setBase, connected, health, error, checking, graph } = useService();
+  const writer = graph?.configured ? graph.writer : undefined;
   const [url, setUrl] = useState(base);
   const [validation, setValidation] = useState("");
   const connect = () => {
@@ -807,9 +886,15 @@ export function System() {
                     : base
                       ? "Unreachable"
                       : "Not connected"
-                : index === 3
-                  ? display(health?.["policy_version"])
-                  : "Not reported by API"}
+                : index === 1
+                  ? graphLabel(graph)
+                  : index === 3
+                    ? display(health?.["policy_version"])
+                    : index === 4 && writer
+                      ? `${writer.written} written, ${writer.pending} pending`
+                      : index === 5 && writer
+                        ? `${writer.failed} failed, ${writer.dropped} dropped`
+                        : "Not reported by API"}
             </span>
           </div>
         ))}
@@ -818,7 +903,7 @@ export function System() {
         <SectionHeading title="Connection configuration" />
         <p className="section-description mt-3 leading-7">
           Connect a reachable AEGIS API. Its allowed origins must include this console’s address.
-          Neo4j health and write failure counts are not exposed by the current health endpoint.
+          Neo4j connectivity and graph write counts are read from /v1/graph/status.
         </p>
         <div className="flex gap-3 mt-4">
           <Input

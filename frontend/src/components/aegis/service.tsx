@@ -1,6 +1,11 @@
 import { createContext, useContext, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { apiRequest, type EvaluationResult, type RecordData } from "@/lib/aegis-api";
+import {
+  apiRequest,
+  type EvaluationResult,
+  type GraphStatus,
+  type RecordData,
+} from "@/lib/aegis-api";
 interface ServiceState {
   base: string;
   setBase: (url: string) => void;
@@ -8,6 +13,7 @@ interface ServiceState {
   error: string;
   connected: boolean;
   checking: boolean;
+  graph: GraphStatus | undefined;
   result: EvaluationResult | null;
   setResult: (result: EvaluationResult) => void;
 }
@@ -25,6 +31,13 @@ export function ServiceProvider({ children }: { children: ReactNode }) {
     retry: false,
     refetchInterval: 15000,
   });
+  const graphQuery = useQuery({
+    queryKey: ["aegis", base, "graph-status"],
+    queryFn: () => apiRequest<GraphStatus>(base, "/v1/graph/status"),
+    enabled: Boolean(base && query.data),
+    retry: false,
+    refetchInterval: 15000,
+  });
   return (
     <ServiceContext.Provider
       value={{
@@ -34,6 +47,7 @@ export function ServiceProvider({ children }: { children: ReactNode }) {
         connected: Boolean(query.data && !query.error),
         checking: query.isFetching,
         error: query.error?.message ?? "",
+        graph: graphQuery.error ? undefined : graphQuery.data,
         result,
         setResult,
       }}

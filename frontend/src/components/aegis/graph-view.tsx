@@ -38,7 +38,7 @@ function GraphCanvas({
       ).slice(0, 60),
       original: n,
     },
-    className: `trace-node node-${display(n["type"]).toLowerCase()}`,
+    className: `trace-node node-${display(n["type"]).toLowerCase()}${n["impacted"] ? " node-impacted" : ""}`,
   }));
   const valid = new Set(nodes.map((n) => n["id"]));
   const edges: Edge[] = sourceEdges
@@ -47,8 +47,10 @@ function GraphCanvas({
       source: display(e["source"] ?? e["from"]),
       target: display(e["target"] ?? e["to"]),
       label: display(e["type"]),
-      className:
-        display(e["type"]).includes("CONTRADICT") || display(e["type"]).includes("CONFLICT")
+      animated: Boolean(e["impacted"]),
+      className: e["impacted"]
+        ? "edge-impacted"
+        : display(e["type"]).includes("CONTRADICT") || display(e["type"]).includes("CONFLICT")
           ? "edge-contradiction"
           : "edge-supported",
     }))

@@ -27,7 +27,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useService } from "./service";
-import { display } from "@/lib/aegis-api";
+import { display, graphLabel } from "@/lib/aegis-api";
 
 export const navigation = [
   {
@@ -69,7 +69,7 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
     const target = aliases[window.location.hash as keyof typeof aliases];
     if (target) navigate({ to: target, replace: true });
   }, [navigate]);
-  const { connected, health, base } = useService();
+  const { connected, health, base, graph } = useService();
   const pathname = useLocation({ select: (location) => location.pathname });
   const current = navigation
     .map((group) => group.items.find((item) => item.path === pathname))
@@ -122,7 +122,7 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
               <span className="status-dot" />
               Neo4j
             </span>
-            <span>Not connected</span>
+            <span>{graphLabel(graph)}</span>
           </div>
           <div className="connection-line">
             <span>Policy version</span>
