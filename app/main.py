@@ -2,6 +2,7 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from threading import Lock
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -11,6 +12,7 @@ from fastapi.responses import JSONResponse
 from app.audit import AuditLogger, decisions_router
 from app.core.config import UnknownProfileError
 from app.core.evaluator import Evaluator
+from app.core.explainer import explain_escalation
 from app.escalation import EscalationQueue, escalation_router
 from app.evidence.registry import default_signals
 from app.graph.insights import (
@@ -22,6 +24,7 @@ from app.graph.insights import (
 )
 from app.graph.async_sink import AsyncGraphSink
 from app.graph.driver import make_driver
+from app.graph.events import GraphEvents, router as graph_events_router
 from app.graph.neo4j_sink import Neo4jGraphSink
 from app.graph.routes import router as graph_router
 from app.graph.sink import GraphSink
@@ -80,6 +83,8 @@ def create_app(
 
     driver = neo4j_driver if neo4j_driver is not None else _init_neo4j_driver()
     app.state.neo4j_driver = driver
+    app.state.rag_ingestion_lock = Lock()
+    app.state.graph_events = GraphEvents()
 
     if evaluator is None:
         sink = graph_sink
@@ -93,12 +98,29 @@ def create_app(
         evaluator.graph_sink = AsyncGraphSink(Neo4jGraphSink(driver))
 
     app.state.evaluator = evaluator
+
+    def finish_evaluation(
+        payload: EvaluateRequest, response: EvaluateResponse
+    ) -> EvaluateResponse:
+        try:
+            response.counterfactual = explain_escalation(payload, response, app.state.evaluator.config)
+        except Exception:
+            logger.exception("Could not explain decision %s", response.request_id)
+        if response.trace is not None:
+            try:
+                app.state.graph_events.publish(response.trace)
+            except Exception:
+                logger.exception("Could not publish decision trace %s", response.request_id)
+        return response
+
+    app.state.finish_evaluation = finish_evaluation
     app.state.audit_logger = audit_logger if audit_logger is not None else AuditLogger()
     app.state.escalation_queue = (
         escalation_queue if escalation_queue is not None else EscalationQueue()
     )
 
     app.include_router(rag_router)
+    app.include_router(graph_events_router)
     app.include_router(escalation_router)
     app.include_router(insights_router)
     app.include_router(graph_router)
@@ -175,7 +197,7 @@ def create_app(
             except Exception as exc:
                 logger.warning("Failed to auto-enqueue escalation: %s", exc)
 
-        return response
+        return finish_evaluation(payload, response)
 
     # ---------------------------------------------------------------------------
     # /v1/insights/* endpoints exposing Shatakshi's cross-decision Neo4j queries

@@ -58,6 +58,7 @@ RELATIONSHIP_TYPES: Tuple[str, ...] = (
     "SUPPORTED_BY",     # Claim     -> Evidence
     "CONTRADICTED_BY",  # Claim     -> Evidence
     "FROM",             # Evidence  -> Document
+    "USES_DOCUMENT",    # Decision  -> Document (exact version and evidence references)
     "CONFLICTS_WITH",   # Evidence  -> Evidence
     "SUPERSEDES",       # Document  -> Document
     "BECAUSE",          # Decision  -> Reason

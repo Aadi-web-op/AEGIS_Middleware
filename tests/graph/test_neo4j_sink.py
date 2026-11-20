@@ -21,8 +21,14 @@ from app.graph.contract import (
 )
 from app.graph.neo4j_sink import Neo4jGraphSink
 from app.graph.sink import NullGraphSink, safe_write_trace
-from tests.graph.conftest import REQUEST_ID
+from tests.graph.conftest import EVIDENCE, REQUEST_ID
+from app.graph.identity import content_hash
+from app.graph.trace_builder import build_trace
 from tests.graph.fake_driver import FakeDriver, FakeGraph
+
+
+def _stored_evidence_id(index):
+    return f"evidence:sha256:{content_hash(EVIDENCE[index]['text'])}"
 
 
 @pytest.fixture
@@ -51,7 +57,7 @@ def test_valid_trace_writes_every_node_and_edge(sink, driver, trace):
 
     relationships = {call.relationship for call in driver.edge_merges()}
     assert relationships <= set(RELATIONSHIP_TYPES)
-    assert {"HAS_CLAIM", "SUPPORTED_BY", "CONTRADICTED_BY", "FROM",
+    assert {"HAS_CLAIM", "SUPPORTED_BY", "CONTRADICTED_BY", "FROM", "USES_DOCUMENT",
             "CONFLICTS_WITH", "SUPERSEDES", "BECAUSE", "ABOUT",
             "RETRIEVED"} == relationships
 
@@ -124,7 +130,8 @@ def test_two_conflicts_between_one_pair_stay_two_edges(sink, driver, trace):
     assert {kind for _, _, kind in conflicts} == {"numeric", "version"}
 
     for call in driver.edge_merges("CONFLICTS_WITH"):
-        assert "MERGE (a)-[r:CONFLICTS_WITH {kind: $kind}]->(b)" in call.cypher
+        assert "MERGE (a)-[r:CONFLICTS_WITH {kind: $kind, occurrence_id: $occurrence_id}]->(b)" in call.cypher
+        assert call.params["occurrence_id"] == f"{REQUEST_ID}:0:1"
         assert call.params["kind"] in CONFLICT_KINDS
 
 
@@ -199,12 +206,12 @@ def test_claim_properties_map(sink, driver, trace):
 
 def test_evidence_properties_map(sink, driver, trace):
     sink.write_trace(trace)
-    by_index = {p["evidence_index"]: p for p in driver.node_props("Evidence")}
-    assert set(by_index) == {0, 1, 2}
-    assert by_index[0]["source"] == "hr-policy.pdf"
-    assert by_index[0]["version"] == "2023.1"
-    assert by_index[0]["date"] == "2023-04-01"
-    assert by_index[0]["preview"].startswith("Full-time employees")
+    by_id = {p["id"]: p for p in driver.node_props("Evidence")}
+    assert set(by_id) == {_stored_evidence_id(i) for i in range(3)}
+    first = by_id[_stored_evidence_id(0)]
+    assert first["content_hash"] == content_hash(EVIDENCE[0]["text"])
+    assert first["preview"].startswith("Full-time employees")
+    assert not {"source", "version", "date", "evidence_index"} & first.keys()
 
 
 def test_document_and_reason_properties_map(sink, driver, trace):
@@ -228,9 +235,9 @@ def test_support_edges_point_at_the_right_evidence(sink, driver, trace):
     contradicted = driver.edge_merges("CONTRADICTED_BY")
     assert len(supported) == 1 and len(contradicted) == 1
 
-    assert supported[0].params["to_id"] == f"{REQUEST_ID}:evidence:0"
+    assert supported[0].params["to_id"] == _stored_evidence_id(0)
     assert supported[0].params["props"]["evidence_index"] == 0
-    assert contradicted[0].params["to_id"] == f"{REQUEST_ID}:evidence:1"
+    assert contradicted[0].params["to_id"] == _stored_evidence_id(1)
     assert contradicted[0].params["props"]["evidence_index"] == 1
 
     for call in supported + contradicted:
@@ -246,7 +253,7 @@ def test_no_support_edge_is_invented_for_an_unimplicated_passage(sink, driver, t
         for call in driver.edge_merges("SUPPORTED_BY")
         + driver.edge_merges("CONTRADICTED_BY")
     }
-    assert f"{REQUEST_ID}:evidence:2" not in targets
+    assert _stored_evidence_id(2) not in targets
 
 
 # ---------------------------------------------------------------------------
@@ -273,8 +280,8 @@ def test_conflict_kind_and_values_survive_to_cypher(sink, driver, trace):
 def test_conflict_edges_connect_the_detected_evidence_pair(sink, driver, trace):
     sink.write_trace(trace)
     for call in driver.edge_merges("CONFLICTS_WITH"):
-        assert call.params["from_id"] == f"{REQUEST_ID}:evidence:0"
-        assert call.params["to_id"] == f"{REQUEST_ID}:evidence:1"
+        assert call.params["from_id"] == _stored_evidence_id(0)
+        assert call.params["to_id"] == _stored_evidence_id(1)
         assert call.cypher.startswith("MATCH (a:Evidence {id: $from_id})")
 
 
@@ -297,10 +304,31 @@ def test_each_evidence_points_at_its_own_document(sink, driver, trace):
         (c.params["from_id"], c.params["to_id"]) for c in driver.edge_merges("FROM")
     }
     assert pairs == {
-        (f"{REQUEST_ID}:evidence:0", "doc:hr-policy.pdf@2023.1"),
-        (f"{REQUEST_ID}:evidence:1", "doc:hr-policy.pdf@2024.2"),
-        (f"{REQUEST_ID}:evidence:2", "doc:staff-handbook.pdf@7"),
+        (_stored_evidence_id(0), "doc:hr-policy.pdf@2023.1"),
+        (_stored_evidence_id(1), "doc:hr-policy.pdf@2024.2"),
+        (_stored_evidence_id(2), "doc:staff-handbook.pdf@7"),
     }
+
+
+def test_shared_text_keeps_document_provenance_for_each_decision(sink, driver):
+    for version, text in (("v1", "Paid   leave"), ("v2", "Paid leave\n")):
+        trace = build_trace(
+            request_id=f"decision-{version}",
+            decision="ESCALATE",
+            evidence=[{"text": text, "source": "leave.pdf", "version": version}],
+        )
+        assert sink.write_trace(trace)
+
+    graph = FakeGraph.from_driver(driver)
+    evidence, = graph.labels("Evidence")
+    assert graph.relationships("USES_DOCUMENT") == [
+        ("decision-v1", "doc:leave.pdf@v1", None),
+        ("decision-v2", "doc:leave.pdf@v2", None),
+    ]
+    assert all(
+        call.params["props"]["evidence_ids"] == [evidence["id"]]
+        for call in driver.edge_merges("USES_DOCUMENT")
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -323,7 +351,7 @@ def test_a_long_passage_is_truncated_not_stored_whole(sink, driver, trace):
     long_preview = next(
         p["preview"]
         for p in driver.node_props("Evidence")
-        if p["evidence_index"] == 2
+        if p["id"] == _stored_evidence_id(2)
     )
     assert len(long_preview) == EVIDENCE_PREVIEW_CHARS
     assert "notice period expected" not in long_preview

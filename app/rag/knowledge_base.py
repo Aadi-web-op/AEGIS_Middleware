@@ -1,7 +1,10 @@
 
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
 
+from app.graph.document_versions import DocumentRevision
+from app.graph.identity import content_hash
 from app.ingestion.loader import load_pdf
 from app.ingestion.chunker import chunk_text
 from app.retrieval.vector_store import VectorStore
@@ -28,6 +31,8 @@ class KnowledgeBase:
         self.vector_store = VectorStore()
         self.pipeline = RAGPipeline(self.vector_store)
         self.document_count = 0
+        self._index_lock = Lock()
+        self._indexed_revisions: set[str] = set()
 
     def ingest_pdf(
         self,
@@ -39,6 +44,19 @@ class KnowledgeBase:
     ) -> int:
         """Extract, chunk and index a PDF."""
 
+        _, chunks_added = self.ingest_document(pdf_path, date, version, chunk_size, overlap)
+        return chunks_added
+
+    def ingest_document(
+        self,
+        pdf_path: str,
+        date: str | None = None,
+        version: str | None = None,
+        chunk_size: int = 500,
+        overlap: int = 50,
+        *,
+        source: str | None = None,
+    ) -> tuple[DocumentRevision, int]:
         path = Path(pdf_path)
 
         if not path.is_file():
@@ -51,19 +69,24 @@ class KnowledgeBase:
                 f"No text could be extracted from {path.name}"
             )
 
+        revision = DocumentRevision(source or path.name, version, content_hash(text), date)
         chunks = chunk_text(
             text=text,
-            source=path.name,
+            source=revision.source,
             chunk_size=chunk_size,
             overlap=overlap,
             date=date,
             version=version,
+            document_content_hash=revision.content_hash,
         )
 
-        self.vector_store.add_chunks(chunks)
-        self.document_count += 1
-
-        return len(chunks)
+        with self._index_lock:
+            if revision.id in self._indexed_revisions:
+                return revision, 0
+            self.vector_store.add_chunks(chunks)
+            self._indexed_revisions.add(revision.id)
+            self.document_count += 1
+        return revision, len(chunks)
 
     def query(
         self,
@@ -75,15 +98,10 @@ class KnowledgeBase:
         if not question.strip():
             raise ValueError("Question cannot be empty.")
 
-        if self.vector_store.index.ntotal == 0:
-            raise ValueError(
-                "Knowledge base is empty. Ingest a PDF first."
-            )
-
-        return self.pipeline.retrieve(
-            query=question,
-            top_k=top_k,
-        )
+        with self._index_lock:
+            if self.vector_store.index.ntotal == 0:
+                raise ValueError("Knowledge base is empty. Ingest a PDF first.")
+            return self.pipeline.retrieve(query=question, top_k=top_k)
 
     def answer(
         self,

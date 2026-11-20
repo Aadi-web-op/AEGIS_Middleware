@@ -47,11 +47,10 @@ logger = logging.getLogger(__name__)
 # also be worth sharing, but nothing in the retrieval layer currently
 # emits a stable chunk id, so it stays request-scoped until one exists; a
 # trace may override by supplying `chunk_id` on an evidence item.
+from app.graph.identity import content_hash, document_id, normalized_text
 _CLAIM_ID = "{request_id}:claim:{index}"
 _EVIDENCE_ID = "{request_id}:evidence:{index}"
 _REASON_ID = "{request_id}:reason:{index}"
-_DOCUMENT_ID = "doc:{source}"
-_DOCUMENT_ID_VERSIONED = "doc:{source}@{version}"
 
 # DESIGN NOTE (2) -- reason attribution.
 #
@@ -71,14 +70,6 @@ _CLAIM_REASON_CODES = frozenset({"UNSUPPORTED_CLAIM"})
 _EVIDENCE_REASON_CODES = frozenset({"CONTRADICTION"})
 
 _VERSION_PARTS = re.compile(r"\d+")
-
-
-def _document_id(source: Optional[str], version: Optional[str]) -> Optional[str]:
-    if not source:
-        return None
-    if version:
-        return _DOCUMENT_ID_VERSIONED.format(source=source, version=version)
-    return _DOCUMENT_ID.format(source=source)
 
 
 def _version_sort_key(version: Optional[str]) -> Optional[Tuple[int, ...]]:
@@ -228,6 +219,7 @@ def build_trace(
     document_ids: Dict[int, str] = {}
     evidence_meta: List[Mapping[str, Any]] = list(evidence)
     used_evidence_ids: set[str] = set()
+    document_evidence: dict[str, list[str]] = {}
 
     for index, item in enumerate(evidence_meta):
         chunk_id = item.get("chunk_id")
@@ -252,22 +244,26 @@ def build_trace(
 
         source = item.get("source")
         version = item.get("version")
+        text = item.get("text")
+        canonical_text = normalized_text(text) if isinstance(text, str) else ""
+        revision_hash = item.get("document_content_hash")
         # `preview` only: the full passage is never carried into the trace,
         # so it cannot reach the graph even if the writer's cap changed.
-        nodes.append(
-            {
-                "id": evidence_id,
-                "type": "Evidence",
-                "evidence_index": index,
-                "preview": truncate_preview(
-                    item.get("text") or item.get("preview") or "",
-                    EVIDENCE_PREVIEW_CHARS,
-                ),
-                "source": source,
-                "version": version,
-                "date": str(item["date"]) if item.get("date") else None,
-            }
-        )
+        evidence_node = {
+            "id": evidence_id,
+            "type": "Evidence",
+            "evidence_index": index,
+            "preview": truncate_preview(
+                canonical_text or item.get("preview") or "",
+                EVIDENCE_PREVIEW_CHARS,
+            ),
+            "source": source,
+            "version": version,
+            "date": str(item["date"]) if item.get("date") else None,
+        }
+        if canonical_text:
+            evidence_node["content_hash"] = content_hash(canonical_text)
+        nodes.append(evidence_node)
         # Every passage the decision considered, cited or not. Without this
         # an uncited passage is only reachable through its Document, and
         # "which decisions retrieved this document?" cannot be answered.
@@ -280,21 +276,32 @@ def build_trace(
             }
         )
 
-        document_id = _document_id(source, version)
-        if document_id:
-            document_ids[index] = document_id
-            if not any(n["id"] == document_id for n in nodes):
+        doc_id = document_id(source, version, revision_hash)
+        if doc_id:
+            document_ids[index] = doc_id
+            if doc_id not in document_evidence:
+                document_evidence[doc_id] = []
                 nodes.append(
                     {
-                        "id": document_id,
+                        "id": doc_id,
                         "type": "Document",
                         "source": source,
                         "version": version,
                         "date": str(item["date"]) if item.get("date") else None,
                         **document_sort_keys(item),
+                        **({"content_hash": revision_hash} if revision_hash else {}),
                     }
                 )
-            edges.append({"type": "FROM", "from": evidence_id, "to": document_id})
+            document_evidence[doc_id].append(evidence_id)
+            edges.append({"type": "FROM", "from": evidence_id, "to": doc_id})
+
+    for doc_id, evidence_refs in document_evidence.items():
+        edges.append({
+            "type": "USES_DOCUMENT",
+            "from": request_id,
+            "to": doc_id,
+            "evidence_ids": evidence_refs,
+        })
 
     # --- Claim, SUPPORTED_BY, CONTRADICTED_BY ----------------------------
     claim_ids: Dict[int, str] = {}
@@ -343,6 +350,7 @@ def build_trace(
                         "from": claim_id,
                         "to": target,
                         "evidence_index": evidence_index,
+                        "document_id": document_ids.get(evidence_index),
                         "support": claim.get("support", claim.get("score")),
                     }
                 )
@@ -379,6 +387,9 @@ def build_trace(
                 "from": left,
                 "to": right,
                 "kind": conflict.get("kind"),
+                "occurrence_id": f"{request_id}:{index_a}:{index_b}",
+                "document_a_id": document_ids.get(index_a),
+                "document_b_id": document_ids.get(index_b),
                 "value_a": conflict.get("value_a"),
                 "value_b": conflict.get("value_b"),
                 "reason": conflict.get("reason"),
@@ -392,6 +403,8 @@ def build_trace(
         doc_a, doc_b = document_ids.get(index_a), document_ids.get(index_b)
         if not doc_a or not doc_b or doc_a == doc_b:
             continue
+        if evidence_meta[index_a].get("document_content_hash") and evidence_meta[index_b].get("document_content_hash"):
+            continue  # Ingestion records authoritative ordering for these revisions.
         order = _supersedes_order(evidence_meta[index_a], evidence_meta[index_b])
         if order is None:
             logger.debug(
@@ -456,6 +469,7 @@ def build_trace(
                         "type": "ABOUT",
                         "from": reason_id,
                         "to": evidence_ids[evidence_index],
+                        "document_id": document_ids.get(evidence_index),
                     }
                 )
 

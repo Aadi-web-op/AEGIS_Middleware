@@ -77,9 +77,35 @@ Aegis does not merely output a numerical score; it visualizes the entire evidenc
   - *Which human escalations share one common root-cause document?*
 
 > **Production Safety Guarantees:**
-> * **Zero Latency on Decision Path:** Graph writing is asynchronous and non-blocking (`safe_write_trace`). If Neo4j is offline, decisions still return instantly.
+> * **Best-effort persistence:** `safe_write_trace` logs graph write failures and preserves the evaluation and its trace.
 > * **Privacy-First:** Previews are capped at 120 characters; full document texts are never persisted to the graph.
 > * **Idempotent Writes:** Nodes and edges are merged on unique IDs; re-running evaluations creates zero duplicates.
+
+### Finale backend APIs
+
+- **Document change detection** uses `POST /v1/rag/ingest` for server-local PDFs or
+  `POST /v1/rag/ingest/upload?source=leave-policy.pdf&version=v2` with an
+  `application/pdf` request body. Use the same logical `source` across
+  revisions. Seed the first revision through ingestion to establish its text
+  hash. The response reports the previous revision, whether the extracted
+  text changed, and the affected decision and evidence IDs. When Neo4j is
+  unavailable, ingestion still indexes the PDF and reports
+  `change_detection.status: unavailable`. The same revision can be retried
+  after Neo4j recovers without adding duplicate chunks.
+- **Evidence identity** uses SHA-256 of Unicode-normalized, whitespace-collapsed
+  chunk text. Neo4j shares Evidence nodes by hash and records exact
+  Decision-to-Document provenance in `USES_DOCUMENT`. The response trace
+  retains occurrence IDs for signal attribution and exposes each content hash.
+  Apply [scripts/schema.cypher](scripts/schema.cypher) to an existing Neo4j
+  database before using the new document revision registry.
+- **Escalation explanation** is available as `explanation` on `/v1/evaluate`
+  and `/v1/rag/ask`. It includes the score-only decision, policy reasons,
+  contributions, unavailable signals, and the smallest single measured signal
+  change on a 0.0001 grid that permits `CAVEAT` or `ANSWER`, when one exists.
+- **Live traces** stream from `GET /v1/graph/events` as `decision` SSE events.
+  The API publishes the same trace it returns to callers, including when
+  Neo4j is disabled. `Last-Event-ID` can replay up to 128 buffered events
+  from the same server process. A `reset` event signals a gap.
 
 ---
 

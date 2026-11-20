@@ -78,7 +78,7 @@ class MockQuerySession:
 # ---------------------------------------------------------------------------
 def test_schema_statements_defined():
     """Verify constraints and indexes are declared per the team brief."""
-    assert len(CONSTRAINTS) == 5
+    assert len(CONSTRAINTS) == 6
     assert len(INDEXES) >= 5
     assert len(ALL_SCHEMA_STATEMENTS) == len(CONSTRAINTS) + len(INDEXES)
 

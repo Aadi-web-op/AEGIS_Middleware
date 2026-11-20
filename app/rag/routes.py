@@ -1,6 +1,12 @@
-from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
+import logging
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
+from fastapi import APIRouter, Body, HTTPException, Query, Request
+from pydantic import BaseModel, Field
+from pypdf.errors import PdfReadError
+
+from app.graph.document_versions import register_document
 from app.providers.base import ProviderError
 from app.providers.factory import build_provider
 from app.rag.aegis_workflow import AEGISWorkflow
@@ -8,12 +14,14 @@ from app.rag.knowledge_base import KnowledgeBase
 from app.schemas import EvaluateResponse
 
 router = APIRouter(prefix="/v1/rag", tags=["RAG"])
+logger = logging.getLogger(__name__)
 
 
 class IngestPDFRequest(BaseModel):
     pdf_path: str
     date: str | None = None
     version: str | None = None
+    source: str | None = Field(default=None, min_length=1)
 
 
 class RAGAskRequest(BaseModel):
@@ -23,27 +31,64 @@ class RAGAskRequest(BaseModel):
     time_sensitive: bool = True
 
 
-@router.post("/ingest")
-def ingest_pdf(payload: IngestPDFRequest, request: Request):
+def _ingest_pdf(payload: IngestPDFRequest, request: Request):
     try:
-        kb = getattr(request.app.state, "rag_knowledge_base", None)
-        if kb is None:
-            kb = KnowledgeBase()
-            request.app.state.rag_knowledge_base = kb
+        state = request.app.state
+        with state.rag_ingestion_lock:
+            kb = getattr(state, "rag_knowledge_base", None)
+            if kb is None:
+                kb = KnowledgeBase()
+                state.rag_knowledge_base = kb
 
-        chunks_added = kb.ingest_pdf(
-            pdf_path=payload.pdf_path,
-            date=payload.date,
-            version=payload.version,
-        )
+            revision, chunks_added = kb.ingest_document(
+                pdf_path=payload.pdf_path,
+                date=payload.date,
+                version=payload.version,
+                source=payload.source,
+            )
+            change = {"status": "unavailable"}
+            if state.neo4j_driver is not None:
+                try:
+                    change = register_document(state.neo4j_driver, revision)
+                except Exception:
+                    logger.exception("Could not register document revision %s", revision.id)
+
         return {
             "status": "ok",
-            "pdf_path": payload.pdf_path,
             "chunks_added": chunks_added,
             "message": "PDF ingested successfully.",
+            "document": {
+                "id": revision.id,
+                "source": revision.source,
+                "version": revision.version,
+                "content_hash": revision.content_hash,
+            },
+            "change_detection": change,
         }
-    except (FileNotFoundError, ValueError) as exc:
+    except (FileNotFoundError, PdfReadError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/ingest")
+def ingest_pdf(payload: IngestPDFRequest, request: Request):
+    return {"pdf_path": payload.pdf_path, **_ingest_pdf(payload, request)}
+
+
+@router.post("/ingest/upload")
+def upload_pdf(
+    request: Request,
+    pdf: bytes = Body(media_type="application/pdf"),
+    source: str = Query(min_length=1),
+    version: str | None = None,
+    date: str | None = None,
+):
+    with TemporaryDirectory() as directory:
+        path = Path(directory) / "document.pdf"
+        path.write_bytes(pdf)
+        return _ingest_pdf(
+            IngestPDFRequest(pdf_path=str(path), source=source, version=version, date=date),
+            request,
+        )
 
 
 @router.post("/ask", response_model=EvaluateResponse)
@@ -71,6 +116,7 @@ def ask_rag(payload: RAGAskRequest, request: Request):
             evaluator=request.app.state.evaluator,
             audit_logger=audit_logger,
             escalation_queue=getattr(request.app.state, "escalation_queue", None),
+            finish_evaluation=request.app.state.finish_evaluation,
         )
         return workflow.run(
             question=payload.question,
