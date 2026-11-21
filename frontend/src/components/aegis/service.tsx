@@ -1,7 +1,10 @@
 import { createContext, useContext, useState, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { LoginScreen } from "./login";
 import {
+  AuthError,
   apiRequest,
+  type AuthUser,
   type EvaluationResult,
   type GraphStatus,
   type RecordData,
@@ -16,13 +19,24 @@ interface ServiceState {
   graph: GraphStatus | undefined;
   result: EvaluationResult | null;
   setResult: (result: EvaluationResult) => void;
+  user: AuthUser | undefined;
+  login: (email: string, password: string) => Promise<void>;
+  logout: () => Promise<void>;
 }
 const ServiceContext = createContext<ServiceState | null>(null);
+/**
+ * Production builds call the API through this site's own /api proxy (see src/server.ts) so the
+ * session cookie stays first-party. Local dev talks to VITE_AEGIS_API directly. Set
+ * VITE_AEGIS_PROXY=0 to call the API directly in production too.
+ */
+export function defaultApiBase(): string {
+  const configured = (import.meta.env["VITE_AEGIS_API"] ?? "").trim().replace(/\/+$/, "");
+  if (import.meta.env.PROD && configured && import.meta.env["VITE_AEGIS_PROXY"] !== "0")
+    return "/api";
+  return configured || (import.meta.env.DEV ? "http://127.0.0.1:8000" : "");
+}
 export function ServiceProvider({ children }: { children: ReactNode }) {
-  // VITE_AEGIS_API wins; in local dev fall back to the FastAPI default port.
-  const [base, setBase] = useState<string>(
-    import.meta.env["VITE_AEGIS_API"] ?? (import.meta.env.DEV ? "http://127.0.0.1:8000" : ""),
-  );
+  const [base, setBase] = useState<string>(defaultApiBase);
   const [result, setResult] = useState<EvaluationResult | null>(null);
   const query = useQuery({
     queryKey: ["aegis", base, "health"],
@@ -38,21 +52,57 @@ export function ServiceProvider({ children }: { children: ReactNode }) {
     retry: false,
     refetchInterval: 15000,
   });
+  const queryClient = useQueryClient();
+  const authQuery = useQuery({
+    queryKey: ["aegis", base, "auth-me"],
+    queryFn: () => apiRequest<AuthUser>(base, "/v1/auth/me"),
+    enabled: Boolean(base && query.data),
+    retry: false,
+    refetchInterval: 60000,
+  });
+  const login = async (email: string, password: string) => {
+    await apiRequest(base, "/v1/auth/login", { email, password });
+    await queryClient.invalidateQueries({ queryKey: ["aegis"] });
+  };
+  const logout = async () => {
+    await apiRequest(base, "/v1/auth/logout", {});
+    // Drop cached data, then re-check the session: /v1/auth/me now answers 401,
+    // which switches the console back to the sign-in screen.
+    queryClient.removeQueries({
+      queryKey: ["aegis"],
+      predicate: (q) => !["health", "auth-me"].includes(String(q.queryKey[2])),
+    });
+    await queryClient.refetchQueries({ queryKey: ["aegis", base, "auth-me"] });
+  };
+  const connected = Boolean(query.data && !query.error);
+  const signedOut = connected && authQuery.error instanceof AuthError;
+  const checkingSession = connected && authQuery.isPending;
   return (
     <ServiceContext.Provider
       value={{
         base,
         setBase,
         health: query.data,
-        connected: Boolean(query.data && !query.error),
+        connected,
         checking: query.isFetching,
         error: query.error?.message ?? "",
         graph: graphQuery.error ? undefined : graphQuery.data,
         result,
         setResult,
+        user: authQuery.data,
+        login,
+        logout,
       }}
     >
-      {children}
+      {signedOut ? (
+        <LoginScreen />
+      ) : checkingSession ? (
+        <div className="login-shell">
+          <p className="text-sm text-muted-foreground">Checking your session…</p>
+        </div>
+      ) : (
+        children
+      )}
     </ServiceContext.Provider>
   );
 }

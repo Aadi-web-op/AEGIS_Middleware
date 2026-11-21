@@ -15,4 +15,16 @@ export default defineConfig({
     // nitro/vite builds from this
     server: { entry: "server" },
   },
+  // Dev server: the safe subset of the production headers in src/server.ts
+  // (no CSP here: it would block Vite's hot-reload client).
+  vite: {
+    server: {
+      headers: {
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
+        "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
+      },
+    },
+  },
 });

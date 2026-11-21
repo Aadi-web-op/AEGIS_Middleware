@@ -20,6 +20,7 @@ import datetime
 import logging
 import re
 from collections import defaultdict
+from contextvars import ContextVar
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from app.intelligence import queries, rules
@@ -82,7 +83,25 @@ def _plural(n: int, word: str) -> str:
     return f"{n} {word}" if n == 1 else f"{n} {word}s"
 
 
+# doc_id -> "source@version" for the summary being built. Content-hash
+# document ids are opaque, so findings name the document by its metadata.
+_DOC_NAMES: ContextVar[Dict[str, str]] = ContextVar("aegis_doc_names", default={})
+
+
+def doc_names(documents: Sequence[Row]) -> Dict[str, str]:
+    names: Dict[str, str] = {}
+    for doc in documents:
+        if doc.get("doc_id") and doc.get("source"):
+            names[doc["doc_id"]] = (
+                f"{doc['source']}@{doc['version']}" if doc.get("version") else doc["source"]
+            )
+    return names
+
+
 def _doc_label(doc_id: str) -> str:
+    name = _DOC_NAMES.get().get(doc_id)
+    if name:
+        return name
     return doc_id[4:] if doc_id.startswith("doc:") else doc_id
 
 
@@ -1021,14 +1040,18 @@ class IntelligenceService:
                 overview, self._audit_queries(overview), self.topic_fn
             )
             exclusions = stale_excl + gap_excl
-            findings = sort_findings(
-                unsupported_source_findings(table)
-                + contradiction_findings(pairs)
-                + stale_findings(stale)
-                + knowledge_gap_findings(gaps)
-                + escalation_root_cause_findings(root_causes, overview)
-                + uncertainty_source_findings(overview)
-            )
+            token = _DOC_NAMES.set(doc_names(documents))
+            try:
+                findings = sort_findings(
+                    unsupported_source_findings(table)
+                    + contradiction_findings(pairs)
+                    + stale_findings(stale)
+                    + knowledge_gap_findings(gaps)
+                    + escalation_root_cause_findings(root_causes, overview)
+                    + uncertainty_source_findings(overview)
+                )
+            finally:
+                _DOC_NAMES.reset(token)
         except GraphUnavailable as exc:
             graph_state = {"available": False, "reason": str(exc)}
             findings, exclusions, graph_decisions = [], [], 0

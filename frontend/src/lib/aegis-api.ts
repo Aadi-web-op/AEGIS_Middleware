@@ -137,6 +137,18 @@ export function apiUrl(value: string) {
     throw new Error("Enter an HTTP or HTTPS API URL without credentials.");
   return url.href.replace(/\/$/, "");
 }
+/** Thrown on HTTP 401 so the console can show the sign-in screen. */
+export class AuthError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AuthError";
+  }
+}
+export interface AuthUser {
+  auth_enabled: boolean;
+  email: string | null;
+  role: string;
+}
 export async function apiRequest<T>(
   base: string,
   path: string,
@@ -146,12 +158,15 @@ export async function apiRequest<T>(
   if (!base) throw new Error("No AEGIS API connected.");
   const response = await fetch(`${base}${path}`, {
     method: body ? method : "GET",
+    // Send the HttpOnly session cookie set by /v1/auth/login.
+    credentials: "include",
     ...(body
       ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
       : {}),
     signal: AbortSignal.timeout(30000),
   });
   const data = await response.json();
+  if (response.status === 401) throw new AuthError(data.detail ?? "Sign in required.");
   if (!response.ok)
     throw new Error(
       typeof data.detail === "string" ? data.detail : `AEGIS returned ${response.status}.`,

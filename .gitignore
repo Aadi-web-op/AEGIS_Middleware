@@ -60,3 +60,5 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 *.db
+# Neo4j Aura downloads its instance credentials here; never commit them.
+Neo4j-*-Created-*.txt

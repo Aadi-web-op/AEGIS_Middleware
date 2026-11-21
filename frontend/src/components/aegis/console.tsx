@@ -12,6 +12,7 @@ import {
   FileText,
   GitBranch,
   LayoutDashboard,
+  LogOut,
   Menu,
   Network,
   PanelLeftClose,
@@ -69,14 +70,14 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
     const target = aliases[window.location.hash as keyof typeof aliases];
     if (target) navigate({ to: target, replace: true });
   }, [navigate]);
-  const { connected, health, base, graph } = useService();
+  const { connected, health, base, graph, user, logout } = useService();
   const pathname = useLocation({ select: (location) => location.pathname });
   const current = navigation
     .map((group) => group.items.find((item) => item.path === pathname))
     .find((item) => item !== undefined);
   return (
     <div className="console-shell">
-      <aside className={`console-sidebar ${open ? "is-open" : ""}`}>
+      <aside className={`console-sidebar ${open ? "is-open" : ""}`} aria-label="Console sidebar">
         <Link to="/" className="brand" onClick={() => setOpen(false)}>
           <Shield className="brand-symbol" strokeWidth={1.7} />
           <div>
@@ -110,6 +111,21 @@ export function ConsoleShell({ children }: { children: ReactNode }) {
           ))}
         </nav>
         <div className="sidebar-bottom">
+          {user?.auth_enabled && (
+            <div className="connection-line">
+              <span title={user.email ?? ""} className="truncate">
+                {user.email} · {user.role}
+              </span>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 text-xs hover:underline"
+                onClick={() => void logout()}
+              >
+                <LogOut size={12} />
+                Sign out
+              </button>
+            </div>
+          )}
           <div className="connection-line">
             <span>
               <span className="status-dot" />
@@ -232,7 +248,7 @@ export function EmptyState({
   return (
     <div className="empty-state">
       <Icon className="empty-icon" />
-      <h3>{title}</h3>
+      <h2>{title}</h2>
       <p>{description}</p>
       {link && (
         <Link to="/system">
@@ -269,7 +285,7 @@ export function Footer() {
         Evidence-backed decisions. Traceable intelligence.
       </span>
       <span>
-        AEGIS Trust Console <span className="text-border">/</span> Powered by Neo4j
+        AEGIS Trust Console <span aria-hidden="true">/</span> Powered by Neo4j
       </span>
     </footer>
   );

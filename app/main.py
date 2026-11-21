@@ -10,6 +10,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.audit import AuditLogger, decisions_router
+from app.auth import (
+    AuthMiddleware,
+    LoginLimiter,
+    SecurityHeadersMiddleware,
+    UserStore,
+    api_keys_from_env,
+    auth_enabled_from_env,
+    auth_router,
+    ensure_admin,
+)
 from app.core.config import UnknownProfileError
 from app.core.evaluator import Evaluator
 from app.core.explainer import explain_escalation
@@ -42,7 +52,8 @@ DEFAULT_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
 
 def _allowed_origins() -> list[str]:
     raw = os.environ.get("AEGIS_CORS_ORIGINS", DEFAULT_ORIGINS)
-    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+    # Browsers send Origin without a trailing slash; tolerate "https://x.app/" in config.
+    return [origin.strip().rstrip("/") for origin in raw.split(",") if origin.strip()]
 
 
 def _init_neo4j_driver() -> Any | None:
@@ -65,6 +76,8 @@ def create_app(
     graph_sink: GraphSink | None = None,
     audit_logger: AuditLogger | None = None,
     escalation_queue: EscalationQueue | None = None,
+    user_store: UserStore | None = None,
+    auth_enabled: bool | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -80,6 +93,9 @@ def create_app(
         description="Uncertainty middleware: decides whether an AI answer should be "
         "returned, caveated, escalated or withheld.",
         lifespan=lifespan,
+        # Interactive docs are handy locally; set AEGIS_DOCS_ENABLED=0 in production.
+        **({} if os.environ.get("AEGIS_DOCS_ENABLED", "1") != "0"
+           else {"docs_url": None, "redoc_url": None, "openapi_url": None}),
     )
 
     driver = neo4j_driver if neo4j_driver is not None else _init_neo4j_driver()
@@ -131,12 +147,30 @@ def create_app(
     app.include_router(graph_router)
     app.include_router(decisions_router)
     app.include_router(intelligence_router)
+    app.include_router(auth_router)
 
+    # Middleware runs outermost-last-added: CORS -> security headers -> auth -> routes.
+    origins = _allowed_origins()
+    if auth_enabled is None:
+        auth_enabled = auth_enabled_from_env()
+    app.state.user_store = None
+    app.state.login_limiter = LoginLimiter()
+    if auth_enabled:
+        store = user_store if user_store is not None else UserStore()
+        ensure_admin(store)
+        app.state.user_store = store
+        app.add_middleware(AuthMiddleware, store=store, api_keys=api_keys_from_env(),
+                           allowed_origins=origins)
+    app.add_middleware(SecurityHeadersMiddleware,
+                       force_hsts=os.environ.get("AEGIS_HSTS") == "1")
+    if "*" in origins:
+        logger.warning("AEGIS_CORS_ORIGINS contains '*': credentials are not allowed cross-origin.")
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=_allowed_origins(),
-        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["*"],
+        allow_origins=origins,
+        allow_credentials="*" not in origins,
+        allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization", "X-API-Key"],
     )
 
     @app.exception_handler(UnknownProfileError)

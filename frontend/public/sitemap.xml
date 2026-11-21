@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://aegis-middlewate.vercel.app/</loc></url>
+  <url><loc>https://aegis-middlewate.vercel.app/evaluation</loc></url>
+  <url><loc>https://aegis-middlewate.vercel.app/decisions</loc></url>
+  <url><loc>https://aegis-middlewate.vercel.app/documents</loc></url>
+  <url><loc>https://aegis-middlewate.vercel.app/intelligence</loc></url>
+  <url><loc>https://aegis-middlewate.vercel.app/graph</loc></url>
+  <url><loc>https://aegis-middlewate.vercel.app/escalations</loc></url>
+  <url><loc>https://aegis-middlewate.vercel.app/system</loc></url>
+</urlset>

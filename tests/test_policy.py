@@ -82,8 +82,9 @@ def test_missing_critical_signal_escalates():
 
 
 def test_missing_minor_signal_only_adds_caveat():
-    out = run(make_signals(freshness=None))
+    out = run(make_signals(freshness=None), time_sensitive=True)
     assert out.decision == Decision.CAVEAT
+    assert run(make_signals(completeness=None)).decision == Decision.CAVEAT
 
 
 def test_low_score_without_veto_still_explains_itself():

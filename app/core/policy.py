@@ -276,7 +276,11 @@ def decide(
              v.caveat_below_freshness, "below")
 
     for name in score_result.unavailable:
-        floor = Decision.ESCALATE if name in CRITICAL_SIGNALS else Decision.CAVEAT
+        # Undated evidence only matters when the question is time-sensitive;
+        # the stale-evidence rule above is skipped otherwise, so this one is too.
+        if name == "freshness" and not time_sensitive:
+            continue
+        floor =Decision.ESCALATE if name in CRITICAL_SIGNALS else Decision.CAVEAT
         veto(floor, ReasonCode.SIGNAL_UNAVAILABLE,
              f"The {name} check could not be computed, so it was treated as the worst case.",
              f"veto:signal_unavailable:{name}", name, None, None, "unavailable")

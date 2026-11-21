@@ -126,7 +126,7 @@ export function Overview() {
           >
             <span className="minor-label">Aggregate endpoint unavailable</span>
           </SectionHeading>
-          <div className="distribution" aria-label="Decision distribution unavailable">
+          <div className="distribution" role="img" aria-label="Decision distribution unavailable">
             <span />
             <span />
             <span />
@@ -743,11 +743,11 @@ export function Graph() {
                 </Button>
               </div>
             </div>
-            <aside className="graph-inspector">
-              <h3>Node inspector</h3>
+            <aside className="graph-inspector" aria-label="Node inspector">
+              <h2>Node inspector</h2>
               <p>No node selected.</p>
               <div className="section mt-6">
-                <h3>Relationships</h3>
+                <h2>Relationships</h2>
                 <p>
                   {graphUp
                     ? "Select a node to see its relationships."
@@ -772,7 +772,7 @@ function useLiveGraph() {
   const [status, setStatus] = useState("Connecting…");
   useEffect(() => {
     if (!enabled || !base) return;
-    const source = new EventSource(`${base}/v1/graph/events`);
+    const source = new EventSource(`${base}/v1/graph/events`, { withCredentials: true });
     source.onopen = () => setStatus("Live: waiting for decisions");
     source.onerror = () => setStatus("Live stream reconnecting…");
     source.addEventListener("decision", (event) => {

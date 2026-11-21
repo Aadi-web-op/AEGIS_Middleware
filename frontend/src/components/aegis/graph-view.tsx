@@ -84,8 +84,8 @@ function GraphCanvas({
           </Button>
         </div>
       </div>
-      <aside className="graph-inspector">
-        <h3>{selected ? "Selected entity" : "Node inspector"}</h3>
+      <aside className="graph-inspector" aria-label="Node inspector">
+        <h2>{selected ? "Selected entity" : "Node inspector"}</h2>
         {selected ? (
           Object.entries(selected).map(([key, value]) => (
             <p key={key}>

@@ -40,6 +40,7 @@ async function uploadPdf(
   if (date) params.set("date", date);
   const response = await fetch(`${base}/v1/rag/ingest/upload?${params}`, {
     method: "POST",
+    credentials: "include",
     headers: { "Content-Type": "application/pdf" },
     body: file,
     signal: AbortSignal.timeout(120000),

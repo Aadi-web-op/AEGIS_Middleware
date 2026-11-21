@@ -203,10 +203,16 @@ def test_without_claims_behaviour_is_the_old_behaviour(claims):
 # ---------------------------------------------------------------- unavailable signals
 @pytest.mark.parametrize("name", ["freshness", "completeness", "ambiguity"])
 def test_unavailable_minor_signal_caveats(name):
-    out = run([S()], signals=good(**{name: None}))
+    out = run([S()], signals=good(**{name: None}), time_sensitive=True)
     assert out.decision == Decision.CAVEAT
     assert out.decisive_rule == f"veto:signal_unavailable:{name}"
     assert any(r.code == ReasonCode.SIGNAL_UNAVAILABLE for r in out.reasons)
+
+
+def test_undated_evidence_does_not_caveat_a_timeless_question():
+    out = run([S()], signals=good(freshness=None), time_sensitive=False)
+    assert out.decision == Decision.ANSWER
+    assert all(r.code != ReasonCode.SIGNAL_UNAVAILABLE for r in out.reasons)
 
 
 @pytest.mark.parametrize("name", ["relevance", "entailment", "contradiction"])
@@ -219,7 +225,7 @@ def test_unavailable_critical_signal_escalates(name):
 def test_all_signals_unavailable_fails_closed():
     signals = Signals()
     out = decide(signals, compute_score(signals, CONFIG.weights),
-                 CONFIG.get_profile("standard"), 2, claims=None)
+                 CONFIG.get_profile("standard"), 2, claims=None, time_sensitive=True)
     assert out.decision == Decision.ABSTAIN  # score 0
     assert len([f for f in out.factors if f.comparison == "unavailable"]) == 6
 
