@@ -10,6 +10,8 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 # The pre-auth suite builds apps without signing in; auth tests opt back in
 # with create_app(auth_enabled=True, user_store=...).
 os.environ.setdefault("AEGIS_AUTH_ENABLED", "0")
+# Locked facts live in memory unless a test passes its own FactStore.
+os.environ.setdefault("AEGIS_FACTS_DB_PATH", ":memory:")
 
 import pytest  # noqa: E402
 

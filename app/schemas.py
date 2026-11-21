@@ -30,6 +30,8 @@ class ReasonCode(str, Enum):
     INCOMPLETE_EVIDENCE = "INCOMPLETE_EVIDENCE"
     AMBIGUOUS_QUERY = "AMBIGUOUS_QUERY"
     SIGNAL_UNAVAILABLE = "SIGNAL_UNAVAILABLE"
+    # Fact Lock: the answer states a value that differs from an approved fact.
+    LOCKED_FACT_MISMATCH = "LOCKED_FACT_MISMATCH"
 
 
 class ClaimStatus(str, Enum):
@@ -99,6 +101,27 @@ class Explanation(BaseModel):
     summary: str
     decisive_rule: str | None = None
     factors: list[ExplanationFactor] = Field(default_factory=list)
+
+
+class FactCheck(BaseModel):
+    """One locked fact the answer touched, and what Fact Lock did about it."""
+    fact_key: str
+    label: str
+    level: int = Field(ge=1, le=4)
+    # confirmed | mismatch | outdated | unclear | uncited | not_stated
+    verdict: str
+    locked: str
+    stated: str | None = None
+    source: str | None = None
+    version: str | None = None
+    outdated_version: str | None = None
+    # [start, end) of the stated value inside the evaluated answer.
+    span: list[int] | None = None
+    # none | note | correct | block | approval
+    action: str = "none"
+    # "answer" when the answer names the fact, "question" when only the question does.
+    scope: str = "answer"
+    message: str
 
 
 class EvaluateRequest(BaseModel):
@@ -181,3 +204,9 @@ class EvaluateResponse(BaseModel):
     counterfactual: PolicyExplanation | None = None
     # Sentence-level support/conflict spans per passage (app/evidence/highlight.py).
     highlights: list[EvidenceHighlight] = Field(default_factory=list)
+    # Fact Lock (app/facts): approved facts the answer touched. Empty when no
+    # facts are locked or none apply.
+    fact_checks: list[FactCheck] = Field(default_factory=list)
+    # Level-2 facts: the answer with wrong values replaced by the locked ones.
+    corrected_answer: str | None = None
+    requires_approval: bool = False

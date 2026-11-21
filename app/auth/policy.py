@@ -27,6 +27,9 @@ RULES: list[tuple[str, str, frozenset]] = [
     ("POST", "/v1/escalations", frozenset({"admin", "reviewer", "service"})),
     ("PATCH", "/v1/escalations/", frozenset({"admin", "reviewer"})),
     ("PUT", "/v1/escalations/", frozenset({"admin", "reviewer"})),
+    ("POST", "/v1/facts/check", frozenset({"admin", "reviewer", "service"})),
+    ("GET", "/v1/facts", frozenset(PEOPLE)),
+    ("*", "/v1/facts", frozenset({"admin"})),
     ("GET", "/v1/", frozenset(PEOPLE)),
 ]
 DEFAULT_ROLES = frozenset({"admin"})

@@ -1378,3 +1378,55 @@ mark.hl-number {
   text-align: center;
   word-break: break-all;
 }
+
+/* Fact Lock */
+.fact-levels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 0.6rem;
+  margin: 1rem 0 1.5rem;
+}
+.fact-level {
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: 8px;
+  padding: 0.6rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: 0.78rem;
+}
+.fact-level span {
+  color: var(--muted-foreground);
+}
+.fact-level-1 { border-left-color: #64748b; }
+.fact-level-2 { border-left-color: #0ea5e9; }
+.fact-level-3 { border-left-color: #f59e0b; }
+.fact-level-4 { border-left-color: #ef4444; }
+.fact-chip {
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: 6px;
+  padding: 0.1rem 0.45rem;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+.fact-result .blast-list li {
+  grid-template-columns: 6.5rem 1fr;
+}
+.fact-corrected {
+  margin-top: 0.8rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: 8px;
+  border: 1px dashed var(--border);
+  font-size: 0.82rem;
+}
+.fact-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 0.6rem;
+  margin-top: 0.8rem;
+}
+.fact-form select {
+  height: 2.25rem;
+}

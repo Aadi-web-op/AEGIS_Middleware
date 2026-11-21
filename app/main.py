@@ -26,6 +26,7 @@ from app.core.explainer import explain_escalation
 from app.escalation import EscalationQueue, escalation_router
 from app.evidence.highlight import build_highlights
 from app.evidence.registry import default_signals
+from app.facts import FactGraph, FactLock, FactStore, facts_router
 from app.graph.insights import (
     conflicting_document_pairs,
     escalations_by_root_cause,
@@ -78,6 +79,7 @@ def create_app(
     escalation_queue: EscalationQueue | None = None,
     user_store: UserStore | None = None,
     auth_enabled: bool | None = None,
+    fact_store: FactStore | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -116,11 +118,20 @@ def create_app(
 
     app.state.evaluator = evaluator
 
+    # Fact Lock: approved facts checked on every answer, independent of retrieval.
+    app.state.fact_store = fact_store if fact_store is not None else FactStore()
+    app.state.fact_graph = FactGraph(driver) if driver is not None else None
+    if getattr(evaluator, "fact_lock", None) is None:
+        evaluator.fact_lock = FactLock(app.state.fact_store)
+
     def finish_evaluation(
         payload: EvaluateRequest, response: EvaluateResponse
     ) -> EvaluateResponse:
+        locked = any(c.action in ("block", "approval") for c in response.fact_checks)
         try:
-            response.counterfactual = explain_escalation(payload, response, app.state.evaluator.config)
+            # A locked fact forced the escalation; no signal change would undo it.
+            if not locked:
+                response.counterfactual = explain_escalation(payload, response, app.state.evaluator.config)
         except Exception:
             logger.exception("Could not explain decision %s", response.request_id)
         try:
@@ -148,6 +159,7 @@ def create_app(
     app.include_router(decisions_router)
     app.include_router(intelligence_router)
     app.include_router(auth_router)
+    app.include_router(facts_router)
 
     # Middleware runs outermost-last-added: CORS -> security headers -> auth -> routes.
     origins = _allowed_origins()
@@ -205,6 +217,12 @@ def create_app(
     @app.post("/v1/evaluate", response_model=EvaluateResponse)
     def evaluate(payload: EvaluateRequest):
         response = app.state.evaluator.evaluate(payload)
+        if response.fact_checks and app.state.fact_graph is not None:
+            try:
+                active = {f.key: f for f in app.state.fact_store.active()}
+                app.state.fact_graph.record(response.request_id, response.fact_checks, active)
+            except Exception as exc:
+                logger.warning("Failed to record fact assertions: %s", exc)
 
         audit_log = getattr(app.state, "audit_logger", None)
         if audit_log is not None:

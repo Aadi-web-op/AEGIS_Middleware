@@ -5,7 +5,7 @@ from typing import Any
 
 from app.core.claims import ClaimExtractor
 from app.core.config import PolicyConfig, load_policy_config
-from app.core.policy import decide
+from app.core.policy import PolicyOutcome, decide, more_conservative
 from app.core.scoring import compute_score
 from app.evidence.base import Signal
 from app.graph.sink import GraphSink, safe_write_trace
@@ -41,6 +41,7 @@ class Evaluator:
         config: PolicyConfig | None = None,
         graph_sink: GraphSink | None = None,
         claim_extractor: ClaimExtractor | None = None,
+        fact_lock: Any | None = None,
     ):
         names = [s.name for s in signals]
         if len(set(names)) != len(names):
@@ -53,6 +54,8 @@ class Evaluator:
         self.config = config if config is not None else load_policy_config()
         self.graph_sink = graph_sink
         self.claim_extractor = claim_extractor
+        # Fact Lock (app/facts/lock.py): approved facts checked on every answer.
+        self.fact_lock = fact_lock
 
     def evaluate(
         self, request: EvaluateRequest, *, request_id: str | None = None
@@ -111,6 +114,8 @@ class Evaluator:
             signal_reasons=signal_reasons,
             claims=verified_claims,
         )
+        facts = self._run_fact_lock(request)
+        outcome = self._apply_fact_lock(outcome, facts)
         unavailable_signals = self._unavailable_signals(signals)
         explanation = Explanation(
             summary=render_summary(outcome.decision, outcome.decisive_rule, outcome.factors),
@@ -169,7 +174,59 @@ class Evaluator:
             headline=render_headline(outcome.decision),
             unavailable_signals=unavailable_signals,
             explanation=explanation,
+            **self._fact_fields(facts, outcome.decision),
         )
+
+    # ------------------------------------------------------------ Fact Lock
+    def _run_fact_lock(self, request: EvaluateRequest) -> Any | None:
+        if self.fact_lock is None:
+            return None
+        try:
+            return self.fact_lock.check(request.query, request.answer, request.evidence)
+        except Exception:
+            logger.exception("Fact Lock failed; continuing with the evidence decision")
+            return None
+
+    @staticmethod
+    def _apply_fact_lock(outcome: PolicyOutcome, facts: Any | None) -> PolicyOutcome:
+        """The stricter of the evidence decision and the Fact Lock floor wins."""
+        if facts is None or (facts.floor is None and not facts.reasons):
+            return outcome
+        decision = outcome.decision
+        if facts.floor is not None:
+            decision = more_conservative(outcome.decision, facts.floor)
+        factor = ExplanationFactor(
+            signal="fact_lock",
+            effect=facts.floor,
+            comparison="mismatch",
+            message=facts.reasons[0].message if facts.reasons else "Locked facts checked.",
+        )
+        update: dict[str, Any] = {
+            "decision": decision,
+            "reasons": [*outcome.reasons, *facts.reasons],
+            "factors": [*outcome.factors, factor],
+        }
+        if decision != outcome.decision:
+            update["decisive_rule"] = "veto:locked_fact"
+            update["recommended_action"] = {
+                Decision.CAVEAT: RecommendedAction.RETURN_WITH_CAVEAT,
+                Decision.ESCALATE: RecommendedAction.ESCALATE_TO_HUMAN,
+            }.get(decision, outcome.recommended_action)
+        if decision == Decision.CAVEAT and facts.notes:
+            note = " ".join(facts.notes)
+            update["caveat_text"] = f"{outcome.caveat_text} {note}" if outcome.caveat_text else note
+        return outcome.model_copy(update=update)
+
+    @staticmethod
+    def _fact_fields(facts: Any | None, decision: Decision) -> dict[str, Any]:
+        if facts is None:
+            return {}
+        return {
+            "fact_checks": facts.checks,
+            # Only a CAVEAT answer is delivered, so only then is a correction useful.
+            "corrected_answer": facts.corrected_answer if decision == Decision.CAVEAT else None,
+            "requires_approval": facts.requires_approval,
+        }
 
     @staticmethod
     def _unavailable_signals(signals: Signals) -> list[str]:
@@ -342,4 +399,6 @@ class Evaluator:
                 decisive_rule="veto:no_evidence",
                 factors=[no_evidence_factor],
             ),
+            # Reported for transparency; ABSTAIN is already the strictest outcome.
+            **self._fact_fields(self._run_fact_lock(request), Decision.ABSTAIN),
         )
