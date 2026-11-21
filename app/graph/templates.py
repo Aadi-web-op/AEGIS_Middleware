@@ -31,6 +31,7 @@ REASON_TEMPLATES: Dict[str, str] = {
     ReasonCode.INCOMPLETE_EVIDENCE.value: "The documents cover only part of the question: {missing_part}.",
     ReasonCode.AMBIGUOUS_QUERY.value: "The question could mean more than one thing. {clarifying_question}",
     ReasonCode.SIGNAL_UNAVAILABLE.value: "One of our checks could not run, so we took the cautious route.",
+    ReasonCode.LOCKED_FACT_MISMATCH.value: "The answer contradicts a fact your company locked.",
 }
 
 

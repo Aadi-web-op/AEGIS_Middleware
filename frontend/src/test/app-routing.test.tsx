@@ -15,6 +15,7 @@ describe("App routing", () => {
     "/graph",
     "/documents",
     "/escalations",
+    "/facts",
     "/system",
   ])("preserves the requested workspace %s", (path) => {
     const router = createRouter({ routeTree, context: { queryClient: new QueryClient() } });

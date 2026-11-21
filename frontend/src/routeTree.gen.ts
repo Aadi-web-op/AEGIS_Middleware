@@ -14,6 +14,7 @@ import { Route as DecisionsRouteImport } from './routes/decisions'
 import { Route as DocumentsRouteImport } from './routes/documents'
 import { Route as EscalationsRouteImport } from './routes/escalations'
 import { Route as EvaluationRouteImport } from './routes/evaluation'
+import { Route as FactsRouteImport } from './routes/facts'
 import { Route as GraphRouteImport } from './routes/graph'
 import { Route as IntelligenceRouteImport } from './routes/intelligence'
 import { Route as SystemRouteImport } from './routes/system'
@@ -43,6 +44,11 @@ const EvaluationRoute = EvaluationRouteImport.update({
   path: '/evaluation',
   getParentRoute: () => rootRouteImport,
 } as any)
+const FactsRoute = FactsRouteImport.update({
+  id: '/facts',
+  path: '/facts',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const GraphRoute = GraphRouteImport.update({
   id: '/graph',
   path: '/graph',
@@ -65,6 +71,7 @@ export interface FileRoutesByFullPath {
   '/documents': typeof DocumentsRoute
   '/escalations': typeof EscalationsRoute
   '/evaluation': typeof EvaluationRoute
+  '/facts': typeof FactsRoute
   '/graph': typeof GraphRoute
   '/intelligence': typeof IntelligenceRoute
   '/system': typeof SystemRoute
@@ -75,6 +82,7 @@ export interface FileRoutesByTo {
   '/documents': typeof DocumentsRoute
   '/escalations': typeof EscalationsRoute
   '/evaluation': typeof EvaluationRoute
+  '/facts': typeof FactsRoute
   '/graph': typeof GraphRoute
   '/intelligence': typeof IntelligenceRoute
   '/system': typeof SystemRoute
@@ -86,6 +94,7 @@ export interface FileRoutesById {
   '/documents': typeof DocumentsRoute
   '/escalations': typeof EscalationsRoute
   '/evaluation': typeof EvaluationRoute
+  '/facts': typeof FactsRoute
   '/graph': typeof GraphRoute
   '/intelligence': typeof IntelligenceRoute
   '/system': typeof SystemRoute
@@ -98,6 +107,7 @@ export interface FileRouteTypes {
     | '/documents'
     | '/escalations'
     | '/evaluation'
+    | '/facts'
     | '/graph'
     | '/intelligence'
     | '/system'
@@ -108,6 +118,7 @@ export interface FileRouteTypes {
     | '/documents'
     | '/escalations'
     | '/evaluation'
+    | '/facts'
     | '/graph'
     | '/intelligence'
     | '/system'
@@ -118,6 +129,7 @@ export interface FileRouteTypes {
     | '/documents'
     | '/escalations'
     | '/evaluation'
+    | '/facts'
     | '/graph'
     | '/intelligence'
     | '/system'
@@ -129,6 +141,7 @@ export interface RootRouteChildren {
   DocumentsRoute: typeof DocumentsRoute
   EscalationsRoute: typeof EscalationsRoute
   EvaluationRoute: typeof EvaluationRoute
+  FactsRoute: typeof FactsRoute
   GraphRoute: typeof GraphRoute
   IntelligenceRoute: typeof IntelligenceRoute
   SystemRoute: typeof SystemRoute
@@ -171,6 +184,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof EvaluationRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/facts': {
+      id: '/facts'
+      path: '/facts'
+      fullPath: '/facts'
+      preLoaderRoute: typeof FactsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/graph': {
       id: '/graph'
       path: '/graph'
@@ -201,6 +221,7 @@ const rootRouteChildren: RootRouteChildren = {
   DocumentsRoute: DocumentsRoute,
   EscalationsRoute: EscalationsRoute,
   EvaluationRoute: EvaluationRoute,
+  FactsRoute: FactsRoute,
   GraphRoute: GraphRoute,
   IntelligenceRoute: IntelligenceRoute,
   SystemRoute: SystemRoute,

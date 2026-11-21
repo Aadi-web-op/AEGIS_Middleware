@@ -17,6 +17,7 @@ import {
   Network,
   PanelLeftClose,
   Play,
+  Lock,
   Search,
   Settings2,
   Shield,
@@ -50,6 +51,7 @@ export const navigation = [
   {
     group: "OPERATE",
     items: [
+      { name: "Fact Lock", path: "/facts" as const, icon: Lock },
       { name: "Escalations", path: "/escalations" as const, icon: ShieldCheck },
       { name: "System", path: "/system" as const, icon: Settings2 },
     ],
