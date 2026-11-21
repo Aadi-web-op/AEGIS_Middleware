@@ -27,7 +27,7 @@ export function LoginScreen() {
   }
 
   return (
-    <div className="login-shell">
+    <main className="login-shell">
       <form className="login-card" onSubmit={submit} aria-labelledby="login-title">
         <div className="login-brand">
           <ShieldCheck size={22} aria-hidden />
@@ -72,6 +72,6 @@ export function LoginScreen() {
         </Button>
         <p className="login-foot">Connected to {base}</p>
       </form>
-    </div>
+    </main>
   );
 }

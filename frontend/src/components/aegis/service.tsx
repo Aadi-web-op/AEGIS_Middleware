@@ -97,9 +97,9 @@ export function ServiceProvider({ children }: { children: ReactNode }) {
       {signedOut ? (
         <LoginScreen />
       ) : checkingSession ? (
-        <div className="login-shell">
+        <main className="login-shell">
           <p className="text-sm text-muted-foreground">Checking your session…</p>
-        </div>
+        </main>
       ) : (
         children
       )}
