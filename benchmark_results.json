@@ -1,0 +1,40 @@
+{
+  "cold_engine_construct_ms": 0.1,
+  "first_evaluate_ms_includes_load": 111657.6,
+  "warm_evaluate_ms": {
+    "mean": 141.3,
+    "median": 119.6,
+    "p95": 337.0,
+    "min": 30.6,
+    "max": 337.0,
+    "per_case_ms": [
+      30.6,
+      152.3,
+      69.0,
+      53.9,
+      119.8,
+      65.2,
+      219.0,
+      337.0,
+      119.5,
+      246.9
+    ]
+  },
+  "nli_cache": {
+    "hits": 13,
+    "misses": 17,
+    "size": 17,
+    "hit_rate": 0.43333333333333335
+  },
+  "nli_batching": {
+    "batch=1_mean_ms": 4.6,
+    "batch=8_mean_ms": 13.6,
+    "batch=8_per_pair_ms": 1.7
+  },
+  "per_signal_ms_warm": {
+    "relevance": 18.24,
+    "entailment": 23.61,
+    "contradiction": 0.11,
+    "completeness": 17.38
+  }
+}
