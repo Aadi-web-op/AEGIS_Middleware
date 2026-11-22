@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react";
 import { LockKeyhole, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Link } from "@tanstack/react-router";
 import { useService } from "./service";
 
 /** Sign-in gate. The session lives in an HttpOnly cookie set by the API. */
@@ -70,6 +71,11 @@ export function LoginScreen() {
           <LockKeyhole />
           {busy ? "Signing in…" : "Sign in"}
         </Button>
+        <p className="login-foot">
+          <Link to="/pricing" className="text-primary hover:underline">
+            View plans &amp; pricing
+          </Link>
+        </p>
         <p className="login-foot">Connected to {base}</p>
       </form>
     </main>

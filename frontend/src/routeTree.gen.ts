@@ -17,6 +17,7 @@ import { Route as EvaluationRouteImport } from './routes/evaluation'
 import { Route as FactsRouteImport } from './routes/facts'
 import { Route as GraphRouteImport } from './routes/graph'
 import { Route as IntelligenceRouteImport } from './routes/intelligence'
+import { Route as PricingRouteImport } from './routes/pricing'
 import { Route as SystemRouteImport } from './routes/system'
 
 const IndexRoute = IndexRouteImport.update({
@@ -59,6 +60,11 @@ const IntelligenceRoute = IntelligenceRouteImport.update({
   path: '/intelligence',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PricingRoute = PricingRouteImport.update({
+  id: '/pricing',
+  path: '/pricing',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SystemRoute = SystemRouteImport.update({
   id: '/system',
   path: '/system',
@@ -74,6 +80,7 @@ export interface FileRoutesByFullPath {
   '/facts': typeof FactsRoute
   '/graph': typeof GraphRoute
   '/intelligence': typeof IntelligenceRoute
+  '/pricing': typeof PricingRoute
   '/system': typeof SystemRoute
 }
 export interface FileRoutesByTo {
@@ -85,6 +92,7 @@ export interface FileRoutesByTo {
   '/facts': typeof FactsRoute
   '/graph': typeof GraphRoute
   '/intelligence': typeof IntelligenceRoute
+  '/pricing': typeof PricingRoute
   '/system': typeof SystemRoute
 }
 export interface FileRoutesById {
@@ -97,6 +105,7 @@ export interface FileRoutesById {
   '/facts': typeof FactsRoute
   '/graph': typeof GraphRoute
   '/intelligence': typeof IntelligenceRoute
+  '/pricing': typeof PricingRoute
   '/system': typeof SystemRoute
 }
 export interface FileRouteTypes {
@@ -110,6 +119,7 @@ export interface FileRouteTypes {
     | '/facts'
     | '/graph'
     | '/intelligence'
+    | '/pricing'
     | '/system'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -121,6 +131,7 @@ export interface FileRouteTypes {
     | '/facts'
     | '/graph'
     | '/intelligence'
+    | '/pricing'
     | '/system'
   id:
     | '__root__'
@@ -132,6 +143,7 @@ export interface FileRouteTypes {
     | '/facts'
     | '/graph'
     | '/intelligence'
+    | '/pricing'
     | '/system'
   fileRoutesById: FileRoutesById
 }
@@ -144,6 +156,7 @@ export interface RootRouteChildren {
   FactsRoute: typeof FactsRoute
   GraphRoute: typeof GraphRoute
   IntelligenceRoute: typeof IntelligenceRoute
+  PricingRoute: typeof PricingRoute
   SystemRoute: typeof SystemRoute
 }
 
@@ -205,6 +218,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IntelligenceRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/pricing': {
+      id: '/pricing'
+      path: '/pricing'
+      fullPath: '/pricing'
+      preLoaderRoute: typeof PricingRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/system': {
       id: '/system'
       path: '/system'
@@ -224,6 +244,7 @@ const rootRouteChildren: RootRouteChildren = {
   FactsRoute: FactsRoute,
   GraphRoute: GraphRoute,
   IntelligenceRoute: IntelligenceRoute,
+  PricingRoute: PricingRoute,
   SystemRoute: SystemRoute,
 }
 export const routeTree = rootRouteImport

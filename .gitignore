@@ -54,6 +54,8 @@ Thumbs.db
 *.tmp
 *.docx
 *.pdf
+# Fictional Kestrel sample policies served by the console for one-click testing.
+!frontend/public/samples/*.pdf
 .venv/
 
 __pycache__/

@@ -14,6 +14,7 @@ import {
 } from "@/lib/aegis-api";
 import { useRecords, useService } from "./service";
 import { ImpactLookup, IngestDocument } from "./ingest";
+import { SampleDocuments } from "./samples";
 import { Briefing } from "./briefing";
 export { Evaluation } from "./evaluation";
 const TraceGraph = lazy(() =>
@@ -599,6 +600,7 @@ export function DataWorkspace({ kind }: { kind: TableKind }) {
       </div>
       {kind === "documents" && (
         <>
+          <SampleDocuments />
           <IngestDocument />
           <ImpactLookup />
         </>

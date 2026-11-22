@@ -3,6 +3,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import {
   Activity,
   ArrowRight,
+  BadgeIndianRupee,
   Bell,
   Box,
   ChevronDown,
@@ -55,6 +56,10 @@ export const navigation = [
       { name: "Escalations", path: "/escalations" as const, icon: ShieldCheck },
       { name: "System", path: "/system" as const, icon: Settings2 },
     ],
+  },
+  {
+    group: "PRODUCT",
+    items: [{ name: "Plans & Pricing", path: "/pricing" as const, icon: BadgeIndianRupee }],
   },
 ];
 

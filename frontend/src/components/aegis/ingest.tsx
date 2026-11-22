@@ -7,7 +7,7 @@ import { apiRequest, type AffectedDecision } from "@/lib/aegis-api";
 import { useService } from "./service";
 import { BlastRadius } from "./blast-radius";
 
-interface ChangeDetection {
+export interface ChangeDetection {
   status: string;
   changed?: boolean;
   previous_document_id?: string | null;
@@ -15,7 +15,7 @@ interface ChangeDetection {
   affected_request_ids?: string[];
   affected_decisions?: AffectedDecision[];
 }
-interface IngestResult {
+export interface IngestResult {
   chunks_added: number;
   document?: { id: string; source: string; version: string | null };
   change_detection?: ChangeDetection;
@@ -28,9 +28,9 @@ interface ImpactResult {
   decisions: AffectedDecision[];
 }
 
-async function uploadPdf(
+export async function uploadPdf(
   base: string,
-  file: File,
+  file: Blob,
   source: string,
   version: string,
   date: string,
