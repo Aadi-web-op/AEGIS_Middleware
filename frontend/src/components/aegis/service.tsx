@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useLocation } from "@tanstack/react-router";
 import { LoginScreen } from "./login";
 import {
   AuthError,
@@ -23,6 +24,7 @@ interface ServiceState {
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
 }
+const PUBLIC_PATHS = new Set(["/pricing"]);
 const ServiceContext = createContext<ServiceState | null>(null);
 /**
  * Production builds call the API through this site's own /api proxy (see src/server.ts) so the
@@ -75,6 +77,8 @@ export function ServiceProvider({ children }: { children: ReactNode }) {
     await queryClient.refetchQueries({ queryKey: ["aegis", base, "auth-me"] });
   };
   const connected = Boolean(query.data && !query.error);
+  // Pages that need no API data stay readable before sign-in.
+  const publicPage = useLocation({ select: (l) => PUBLIC_PATHS.has(l.pathname) });
   const signedOut = connected && authQuery.error instanceof AuthError;
   const checkingSession = connected && authQuery.isPending;
   return (
@@ -94,7 +98,9 @@ export function ServiceProvider({ children }: { children: ReactNode }) {
         logout,
       }}
     >
-      {signedOut ? (
+      {publicPage ? (
+        children
+      ) : signedOut ? (
         <LoginScreen />
       ) : checkingSession ? (
         <main className="login-shell">

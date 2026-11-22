@@ -1430,3 +1430,109 @@ mark.hl-number {
 .fact-form select {
   height: 2.25rem;
 }
+
+/* Plans & Pricing */
+.pricing-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+.pricing-card,
+.roadmap-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  padding: 20px;
+  min-width: 0;
+}
+.pricing-card.is-featured {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary) inset;
+}
+.pricing-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.pricing-status {
+  font: 10px var(--font-mono);
+  color: var(--muted-foreground);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 7px;
+  white-space: nowrap;
+}
+.pricing-status.is-live {
+  color: var(--answer);
+  border-color: color-mix(in oklch, var(--answer) 45%, transparent);
+}
+.pricing-price {
+  font-family: var(--font-mono);
+  font-size: 22px;
+  margin: 16px 0 4px;
+}
+.pricing-summary {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted-foreground);
+  margin: 12px 0;
+}
+.pricing-features {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 18px;
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+  flex: 1;
+  align-content: start;
+}
+.pricing-features li {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+.pricing-features svg {
+  flex: none;
+  margin-top: 2px;
+}
+.roadmap-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+.roadmap-card h3 {
+  font-size: 14px;
+  margin-top: 14px;
+}
+.roadmap-icon {
+  display: inline-flex;
+  padding: 7px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--primary);
+}
+.roadmap-code {
+  font: 11px/1.6 var(--font-mono);
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px;
+  overflow-x: auto;
+  margin: 0 0 6px;
+}
+@media (max-width: 1100px) {
+  .pricing-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 640px) {
+  .pricing-grid,
+  .roadmap-grid {
+    grid-template-columns: 1fr;
+  }
+}
