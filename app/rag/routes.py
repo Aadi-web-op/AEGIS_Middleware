@@ -56,7 +56,14 @@ def _ingest_pdf(payload: IngestPDFRequest, request: Request):
         return {
             "status": "ok",
             "chunks_added": chunks_added,
-            "message": "PDF ingested successfully.",
+            # The knowledge base skips a revision (same source, version and content) it has
+            # already indexed; say so instead of leaving clients to guess why 0 were added.
+            "already_indexed": chunks_added == 0,
+            "message": (
+                "This exact document version is already in the knowledge base."
+                if chunks_added == 0
+                else "PDF ingested successfully."
+            ),
             "document": {
                 "id": revision.id,
                 "source": revision.source,
