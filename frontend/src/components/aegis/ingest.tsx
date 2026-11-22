@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { apiRequest, type AffectedDecision } from "@/lib/aegis-api";
 import { useService } from "./service";
 import { BlastRadius } from "./blast-radius";
+import { findSample } from "@/lib/samples";
 
 export interface ChangeDetection {
   status: string;
@@ -17,6 +18,7 @@ export interface ChangeDetection {
 }
 export interface IngestResult {
   chunks_added: number;
+  already_indexed?: boolean;
   document?: { id: string; source: string; version: string | null };
   change_detection?: ChangeDetection;
 }
@@ -103,7 +105,15 @@ export function IngestDocument() {
               onChange={(e) => {
                 const picked = e.target.files?.[0] ?? null;
                 setFile(picked);
-                if (picked && !source) setSource(picked.name);
+                mutation.reset();
+                const sample = picked ? findSample(picked.name) : undefined;
+                // A bundled sample carries its real document name and version, so versions of
+                // the same policy link up and change detection can compare them.
+                if (sample) {
+                  setSource(sample.source);
+                  setVersion(sample.version);
+                  setDate(sample.date);
+                } else if (picked && !source) setSource(picked.name);
               }}
             />
           </label>
@@ -142,12 +152,7 @@ export function IngestDocument() {
           {mutation.isPending ? "Ingesting…" : "Ingest & detect changes"}
         </Button>
       </div>
-      {mutation.data && (
-        <p className="text-answer text-xs mt-3" role="status">
-          Document ingested: {mutation.data.chunks_added} chunks added
-          {mutation.data.document?.version ? ` (version ${mutation.data.document.version})` : ""}.
-        </p>
-      )}
+      {mutation.data && <IngestStatus result={mutation.data} />}
       {change && change.status !== "ok" && (
         <p className="minor-label mt-2">
           Change detection needs the Neo4j graph; it is not connected, so no blast radius was
@@ -173,6 +178,24 @@ export function IngestDocument() {
         </p>
       )}
     </details>
+  );
+}
+
+export function IngestStatus({ result }: { result: IngestResult }) {
+  const version = result.document?.version ? ` (version ${result.document.version})` : "";
+  if (result.already_indexed || result.chunks_added === 0)
+    return (
+      <p className="text-caveat text-xs mt-3" role="status">
+        Already in the knowledge base: {result.document?.source ?? "this document"}
+        {version} was ingested earlier with identical content, so nothing new was added. You can ask
+        questions about it on Live Evaluation now.
+      </p>
+    );
+  return (
+    <p className="text-answer text-xs mt-3" role="status">
+      Document ingested: {result.chunks_added} chunk{result.chunks_added === 1 ? "" : "s"} added
+      {version}.
+    </p>
   );
 }
 

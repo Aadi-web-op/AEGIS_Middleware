@@ -82,6 +82,8 @@ def test_uploaded_revision_can_be_retried_without_reindexing_when_neo4j_is_off(t
     assert first.json()["change_detection"] == {"status": "unavailable"}
     assert first.json()["chunks_added"] == 1
     assert second.json()["chunks_added"] == 0
+    assert first.json()["already_indexed"] is False
+    assert second.json()["already_indexed"] is True
     assert first.json()["document"] == second.json()["document"]
     chunk, = app.state.rag_knowledge_base.vector_store.chunks
     assert chunk.document_content_hash == first.json()["document"]["content_hash"]
